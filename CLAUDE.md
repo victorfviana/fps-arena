@@ -36,6 +36,20 @@ Fora do loop, com verificacao executavel normal: render, arena, ondas, HUD,
 audio, build. Essas dimensoes nao tem benchmark real — rubrica ali seria
 opiniao a custo de loop.
 
+## Antes de tudo: o jogo tem de iniciar
+
+Em 13/08/2026 o jogo foi publicado com scorecard 4,45 e **nao iniciava** — um
+ouvinte reexibia o menu por cima da partida. Passou porque toda a verificacao
+automatizada contornava o pointer lock pelo modo `?test=1`, entao o caminho
+real de entrada nunca foi exercitado, e porque nenhuma dimensao da rubrica
+cobria "a partida comeca".
+
+Regra que ficou: **exercitar o caminho do usuario antes de medir qualquer
+dimensao fina de qualidade.** Se um limite de ambiente impedir, declarar como
+nao verificado — nunca construir um desvio e seguir medindo por ele.
+
+`tests/menu.test.ts` guarda essa regressao.
+
 ## Verificacao antes de apresentar
 
 Ordem obrigatoria, do mais barato ao mais caro:
