@@ -13,6 +13,7 @@ import { Input } from './core/input'
 import { FixedTimestepLoop } from './core/loop'
 import { Game } from './game'
 import { Hud } from './hud'
+import { shouldShowMenu } from './menu'
 import { EnemyRenderer } from './render/enemyView'
 import { Renderer } from './render/renderer'
 
@@ -234,13 +235,39 @@ function restart(): void {
 startButton.addEventListener('click', beginPlaying)
 restartButton.addEventListener('click', restart)
 
-// Perder o pointer lock traz o menu de volta, em vez de deixar o jogador
-// mexendo o mouse sem efeito e sem entender por que.
+/**
+ * Perder o ponteiro traz o menu de volta, em vez de deixar o jogador mexendo
+ * o mouse sem efeito e sem entender por que.
+ *
+ * Consulta o DOM em vez de perguntar ao Input. A versao anterior lia
+ * `input.isLocked`, e este ouvinte estava registrado ANTES do ouvinte do
+ * proprio Input — entao, no instante em que o navegador concedia o ponteiro,
+ * este rodava primeiro, ainda via `false` e reexibia o menu. Como o menu tem
+ * fundo quase opaco, o jogo comecava atras de uma tela escura com os botoes
+ * por cima. Depender de ordem de registro entre ouvintes do mesmo evento e
+ * fragil; perguntar ao DOM nao tem essa armadilha.
+ */
 document.addEventListener('pointerlockchange', () => {
-  if (input.isLocked) return
-  if (game.phase === 'over') return
+  const mostrar = shouldShowMenu({
+    pointerLocked: document.pointerLockElement === canvas,
+    phase: game.phase,
+    measurementMode,
+  })
+
+  if (!mostrar) return
   overlay.hidden = false
   hud.hide()
+})
+
+/**
+ * O navegador pode recusar o ponteiro — foco perdido, pedido logo apos uma
+ * saida, politica da pagina. Sem tratar, o jogador clicava em "jogar" e nada
+ * acontecia, sem explicacao na tela.
+ */
+document.addEventListener('pointerlockerror', () => {
+  overlay.hidden = false
+  hud.hide()
+  hud.toast('clique na tela para capturar o mouse', 2500)
 })
 
 input.attach()

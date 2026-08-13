@@ -69,7 +69,7 @@ export class Renderer {
     })
     // Mesma cor da neblina: qualquer diferenca aqui vira uma borda visivel no
     // limite do alcance de visao.
-    this.renderer.setClearColor(0x14120f)
+    this.renderer.setClearColor(0x2a2620)
 
     this.camera = new PerspectiveCamera(75, 1, 1, 8000)
     // A ordem YXZ evita que o giro horizontal incline o horizonte quando o
@@ -80,14 +80,14 @@ export class Renderer {
     // Neblina na cor do fundo: esconde o limite do mundo e da profundidade
     // sem custo de geometria. Comeca tarde de proposito — puxar a neblina para
     // perto engolia a parede oposta e a arena parecia um corredor sem fim.
-    this.scene.fog = new Fog(0x14120f, arena.size * 0.75, arena.size * 1.8)
+    this.scene.fog = new Fog(0x2a2620, arena.size * 1.1, arena.size * 2.6)
 
     this.buildLights()
     this.buildArena(arena)
 
     // Luz que acompanha o jogador. Alcance maior que a metade da arena para
     // que o inimigo se destaque do fundo antes de chegar perto demais.
-    this.playerLight = new PointLight(0xffd2a0, 1.5, 1600, 1.2)
+    this.playerLight = new PointLight(0xffdcb4, 2.4, 2400, 1.0)
     this.scene.add(this.playerLight)
 
     this.muzzleFlash = this.buildViewmodel()
@@ -193,9 +193,11 @@ export class Renderer {
   private buildLights(): void {
     // A arena precisa ser legivel antes de ser atmosferica: com a iluminacao
     // baixa demais, a silhueta do inimigo some contra a parede e o combate
-    // vira adivinhacao.
-    this.scene.add(new AmbientLight(0x6a6472, 2.2))
-    this.scene.add(new HemisphereLight(0x9aa8cc, 0x4a3a28, 1.6))
+    // vira adivinhacao. Os valores ja subiram duas vezes depois de olhar a
+    // tela em vez de confiar no numero — monitor e captura de tela mentem em
+    // direcoes opostas, e no fim quem decide e o olho de quem joga.
+    this.scene.add(new AmbientLight(0x9a94a2, 3.1))
+    this.scene.add(new HemisphereLight(0xbcc6e0, 0x6a5540, 2.4))
   }
 
   private buildArena(arena: Arena): void {
