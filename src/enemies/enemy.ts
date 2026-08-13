@@ -39,6 +39,10 @@ export interface Enemy {
   alive: boolean
   /** Tics ate poder atacar de novo. */
   attackCooldown: number
+  /** Lado para onde circula ao chegar na distancia de tiro: 1 ou -1. */
+  strafeDir: number
+  /** Tics ate sortear um novo lado. */
+  strafeTics: number
 }
 
 /**
@@ -89,6 +93,8 @@ export function createEnemy(kind: EnemyKind, x: number, z: number): Enemy {
     knockZ: 0,
     alive: true,
     attackCooldown: 0,
+    strafeDir: 1,
+    strafeTics: 0,
   }
 }
 
@@ -177,20 +183,48 @@ function advance(
   // corpo caminha ate o centro dele, a camera termina dentro do modelo e o
   // jogador perde a nocao de onde a ameaca esta.
   const bodyDistance = PLAYER_RADIUS + enemy.radius
-  if (distance <= Math.max(preferredRange, bodyDistance)) return
+  const minimo = Math.max(preferredRange, bodyDistance)
 
   const speed = chaseSpeed(ENEMIES[enemy.kind])
   const toPlayerX = (context.player.x - enemy.x) / (distance || 1)
   const toPlayerZ = (context.player.z - enemy.z) / (distance || 1)
 
+  let moveX: number
+  let moveZ: number
+
+  if (distance > minimo) {
+    moveX = toPlayerX * speed
+    moveZ = toPlayerZ * speed
+  } else {
+    // Chegou na distancia de tiro. A versao anterior simplesmente parava, e o
+    // inimigo virava estatua: parecia alvo de estande enquanto continuava
+    // matando de longe. Agora circula o jogador, trocando de lado de tempos
+    // em tempos — le-se como ameaca viva e obriga a reajustar a mira.
+    enemy.strafeTics--
+    if (enemy.strafeTics <= 0) {
+      enemy.strafeDir = context.random.float() < 0.5 ? 1 : -1
+      enemy.strafeTics = 25 + context.random.int(45)
+    }
+
+    const lateral = speed * 0.7 * enemy.strafeDir
+    moveX = -toPlayerZ * lateral
+    moveZ = toPlayerX * lateral
+
+    // Correcao suave de raio: se estiver perto ou longe demais da distancia
+    // preferida, aproxima ou afasta enquanto circula.
+    const erro = distance - minimo
+    if (Math.abs(erro) > 40) {
+      const ajuste = Math.sign(erro) * speed * 0.35
+      moveX += toPlayerX * ajuste
+      moveZ += toPlayerZ * ajuste
+    }
+  }
+
   const separation = computeSeparation(enemy, context.others)
 
   const moved = moveWithCollision(
     { x: enemy.x, z: enemy.z },
-    {
-      x: toPlayerX * speed + separation.x,
-      z: toPlayerZ * speed + separation.z,
-    },
+    { x: moveX + separation.x, z: moveZ + separation.z },
     enemy.radius,
     context.walls,
   )

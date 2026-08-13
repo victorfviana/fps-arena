@@ -31,7 +31,8 @@ const startButton = requireElement<HTMLButtonElement>('#start')
 const restartButton = requireElement<HTMLButtonElement>('#restart')
 const statsPanel = requireElement<HTMLPreElement>('#stats')
 const finalScore = requireElement<HTMLDivElement>('#final-score')
-const finalWave = requireElement<HTMLSpanElement>('#final-wave')
+const finalKills = requireElement<HTMLSpanElement>('#final-kills')
+const deathCause = requireElement<HTMLParagraphElement>('#death-cause')
 
 const hud = new Hud({
   root: requireElement<HTMLDivElement>('#hud'),
@@ -40,6 +41,7 @@ const hud = new Hud({
   wave: requireElement<HTMLDivElement>('#wave'),
   remaining: requireElement<HTMLSpanElement>('#remaining'),
   damageFlash: requireElement<HTMLDivElement>('#damage-flash'),
+  damageArc: requireElement<HTMLDivElement>('#damage-arc'),
   toast: requireElement<HTMLDivElement>('#toast'),
 })
 
@@ -124,6 +126,15 @@ const loop = new FixedTimestepLoop({
     if (events.kills > 0) sfx.enemyDeath()
     else if (events.hits > 0) sfx.enemyPain()
 
+    if (events.enemyShots.length > 0) {
+      renderer.onEnemyFire(events.enemyShots, game.eyeY)
+
+      // Aponta para o golpe mais forte do tic. Varios avisos simultaneos
+      // competindo pela mesma borda da tela nao informam nada.
+      const pior = events.enemyShots.reduce((a, b) => (b.damage > a.damage ? b : a))
+      hud.showDamageDirection(anguloRelativo(pior.fromX, pior.fromZ))
+    }
+
     if (events.damageTaken > 0) {
       hud.flashDamage()
       sfx.playerHurt()
@@ -180,6 +191,23 @@ const loop = new FixedTimestepLoop({
   },
 })
 
+/**
+ * Angulo de um ponto do mundo em relacao a direcao em que o jogador olha.
+ *
+ * Zero na frente, positivo para a direita. E o que o marcador de dano precisa
+ * para girar ate a origem real do golpe.
+ */
+function anguloRelativo(x: number, z: number): number {
+  const anguloAbsoluto = Math.atan2(-(x - game.player.x), -(z - game.player.z))
+  let relativo = game.player.yaw - anguloAbsoluto
+
+  // Normaliza para -PI..PI, senao o marcador da a volta pelo caminho longo.
+  while (relativo > Math.PI) relativo -= Math.PI * 2
+  while (relativo < -Math.PI) relativo += Math.PI * 2
+
+  return relativo
+}
+
 function updateStats(): void {
   const speedPerTic = Math.hypot(game.player.momentumX, game.player.momentumZ)
   const sorted = [...latency.samples].sort((a, b) => a - b)
@@ -207,9 +235,23 @@ function beginPlaying(): void {
   if (!measurementMode) input.requestLock()
 }
 
+/** Frase que explica a morte, em vez de so informar a onda. */
+function descreverMorte(): string {
+  const causa = game.lastDamage
+  if (!causa) return `Voce caiu na onda ${game.wave}.`
+
+  const nome = causa.kind === 'imp' ? 'Um imp' : 'Um zumbi'
+  const onde = causa.melee
+    ? 'chegou perto e te alcancou'
+    : `atirou de longe, a ${Math.round(causa.distance)} passos`
+
+  return `${nome} ${onde}. Voce caiu na onda ${game.wave}.`
+}
+
 function endGame(): void {
   finalScore.textContent = String(game.score)
-  finalWave.textContent = String(game.wave)
+  finalKills.textContent = String(game.kills)
+  deathCause.textContent = descreverMorte()
   gameOverScreen.hidden = false
   hud.hide()
   sfx.gameOver()

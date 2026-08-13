@@ -11,6 +11,7 @@ import { TICRATE, VIEW_HEIGHT } from './core/doom'
 import type { TicCommand } from './core/input'
 import { createRandom, type Random } from './core/random'
 import {
+  BEHAVIOUR,
   createEnemy,
   damageEnemy,
   tickEnemy,
@@ -38,6 +39,26 @@ export interface ShotTrace {
   hit: boolean
 }
 
+/**
+ * Um ataque inimigo, com origem.
+ *
+ * A origem e o que faltava: o inimigo acertava o jogador por hitscan
+ * instantaneo e nada disso era desenhado. Chegava um clarao vermelho na borda
+ * da tela e a vida caia, sem pista nenhuma de quem atirou nem de onde. Sem
+ * esta informacao o desenho nao tem como avisar.
+ */
+export interface EnemyShot {
+  enemyId: number
+  kind: EnemyKind
+  fromX: number
+  fromZ: number
+  toX: number
+  toZ: number
+  damage: number
+  /** Corpo a corpo nao desenha rastro, so o aviso de direcao. */
+  melee: boolean
+}
+
 /** O que aconteceu num tic. Consumido pelo desenho e pelo audio. */
 export interface GameEvents {
   fired: boolean
@@ -46,6 +67,7 @@ export interface GameEvents {
   hits: number
   kills: number
   damageTaken: number
+  enemyShots: EnemyShot[]
   waveStarted: number | null
   playerDied: boolean
 }
@@ -57,8 +79,17 @@ const NO_EVENTS: GameEvents = {
   hits: 0,
   kills: 0,
   damageTaken: 0,
+  enemyShots: [],
   waveStarted: null,
   playerDied: false,
+}
+
+/** Como o jogador morreu, para a tela de fim explicar em vez de so contar. */
+export interface DeathCause {
+  kind: EnemyKind
+  /** Distancia de onde veio o golpe fatal, em map units. */
+  distance: number
+  melee: boolean
 }
 
 export type GamePhase = 'intermission' | 'fighting' | 'over'
@@ -73,6 +104,9 @@ export class Game {
   wave = 0
   score = 0
   kills = 0
+
+  /** Ultimo golpe recebido. Alimenta a tela de fim de jogo. */
+  lastDamage: DeathCause | null = null
 
   private queue: EnemyKind[] = []
   private spawnCooldown = 0
@@ -99,7 +133,7 @@ export class Game {
   tick(command: TicCommand): GameEvents {
     if (this.phase === 'over') return NO_EVENTS
 
-    const events: GameEvents = { ...NO_EVENTS, traces: [] }
+    const events: GameEvents = { ...NO_EVENTS, traces: [], enemyShots: [] }
 
     tickPlayer(this.player, command, this.arena.walls)
     this.advanceWave(events)
@@ -240,6 +274,22 @@ export class Game {
 
       this.player.health -= attack.damage
       events.damageTaken += attack.damage
+
+      const distance = Math.hypot(enemy.x - this.player.x, enemy.z - this.player.z)
+      const melee = BEHAVIOUR[enemy.kind].attackRange < 200
+
+      events.enemyShots.push({
+        enemyId: enemy.id,
+        kind: enemy.kind,
+        fromX: enemy.x,
+        fromZ: enemy.z,
+        toX: this.player.x,
+        toZ: this.player.z,
+        damage: attack.damage,
+        melee,
+      })
+
+      this.lastDamage = { kind: enemy.kind, distance, melee }
     }
   }
 

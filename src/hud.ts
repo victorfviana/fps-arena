@@ -13,6 +13,7 @@ export interface HudElements {
   wave: HTMLElement
   remaining: HTMLElement
   damageFlash: HTMLElement
+  damageArc: HTMLElement
   toast: HTMLElement
 }
 
@@ -22,6 +23,7 @@ export class Hud {
   private lastWave = -1
   private lastRemaining = -1
   private toastTimer: number | null = null
+  private arcTimer: number | null = null
 
   constructor(private readonly elements: HudElements) {}
 
@@ -72,6 +74,28 @@ export class Hud {
     requestAnimationFrame(() => {
       requestAnimationFrame(() => damageFlash.classList.remove('on'))
     })
+  }
+
+  /**
+   * Aponta de onde veio o golpe.
+   *
+   * O angulo e relativo a direcao em que o jogador esta olhando: zero na
+   * frente, cresce no sentido horario. Sem isto, o unico aviso de dano era um
+   * clarao igual em toda a borda da tela — informava que voce levou um tiro,
+   * mas nunca de onde, e voce morria sem saber o que estava acontecendo.
+   */
+  showDamageDirection(angleFromView: number): void {
+    const { damageArc } = this.elements
+    const graus = (angleFromView * 180) / Math.PI
+
+    damageArc.style.transform = `rotate(${graus}deg)`
+    damageArc.classList.add('on')
+
+    if (this.arcTimer !== null) window.clearTimeout(this.arcTimer)
+    this.arcTimer = window.setTimeout(() => {
+      damageArc.classList.remove('on')
+      this.arcTimer = null
+    }, 900)
   }
 
   /** Mensagem curta no centro da tela. */

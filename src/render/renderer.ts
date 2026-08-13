@@ -30,7 +30,7 @@ import {
 } from 'three'
 
 import { FOV_HORIZONTAL_DEG, VIEW_HEIGHT } from '../core/doom'
-import type { ShotTrace } from '../game'
+import type { EnemyShot, ShotTrace } from '../game'
 import type { Arena } from '../world/arena'
 import { createCeilingTexture, createFloorTexture, createWallTexture } from './textures'
 
@@ -60,6 +60,11 @@ export class Renderer {
   private readonly traceLines: LineSegments
   private readonly tracePositions = new Float32Array(MAX_TRACES * 6)
   private traceTimer = 0
+
+  /** Rastros do tiro inimigo, em cor propria e com vida mais longa. */
+  private readonly enemyTraceLines: LineSegments
+  private readonly enemyTracePositions = new Float32Array(MAX_TRACES * 6)
+  private enemyTraceTimer = 0
 
   constructor(private readonly canvas: HTMLCanvasElement, arena: Arena) {
     this.renderer = new WebGLRenderer({
@@ -94,7 +99,10 @@ export class Renderer {
     this.muzzleLight = new PointLight(0xffc06a, 0, 700, 1.8)
     this.scene.add(this.muzzleLight)
 
-    this.traceLines = this.buildTraces()
+    this.traceLines = this.buildTraces(0xffe0a0, this.tracePositions)
+    // Vermelho quente para o tiro que vem em voce: precisa ser distinguivel do
+    // proprio disparo num relance, sem exigir leitura.
+    this.enemyTraceLines = this.buildTraces(0xff5a3c, this.enemyTracePositions)
 
     this.resize()
     window.addEventListener('resize', this.resize)
@@ -145,13 +153,13 @@ export class Renderer {
     return flash
   }
 
-  private buildTraces(): LineSegments {
+  private buildTraces(color: number, positions: Float32Array): LineSegments {
     const geometry = new BufferGeometry()
-    geometry.setAttribute('position', new BufferAttribute(this.tracePositions, 3))
+    geometry.setAttribute('position', new BufferAttribute(positions, 3))
 
     const lines = new LineSegments(
       geometry,
-      new LineBasicMaterial({ color: 0xffe0a0, transparent: true, opacity: 0, fog: false }),
+      new LineBasicMaterial({ color, transparent: true, opacity: 0, fog: false }),
     )
     // O rastro so vive alguns quadros; nao deve ser descartado pelo culling
     // quando a caixa envolvente ficar desatualizada.
@@ -188,6 +196,39 @@ export class Renderer {
     }
 
     this.traceLines.geometry.attributes.position!.needsUpdate = true
+  }
+
+  /**
+   * Registra os tiros que vieram nos inimigos.
+   *
+   * Desenhados da arma deles ate o jogador, na altura do olho. Duram mais que
+   * o proprio disparo do jogador de proposito: quem levou o tiro precisa de
+   * tempo para virar a cabeca e achar a origem.
+   */
+  onEnemyFire(shots: readonly EnemyShot[], eyeY: number): void {
+    const rastros = shots.filter((shot) => !shot.melee)
+    if (rastros.length === 0) return
+
+    this.enemyTraceTimer = 1
+
+    for (let i = 0; i < MAX_TRACES; i++) {
+      const shot = i < rastros.length ? rastros[i]! : null
+      const offset = i * 6
+
+      if (!shot) {
+        this.enemyTracePositions.fill(0, offset, offset + 6)
+        continue
+      }
+
+      this.enemyTracePositions[offset] = shot.fromX
+      this.enemyTracePositions[offset + 1] = eyeY - 6
+      this.enemyTracePositions[offset + 2] = shot.fromZ
+      this.enemyTracePositions[offset + 3] = shot.toX
+      this.enemyTracePositions[offset + 4] = eyeY - 6
+      this.enemyTracePositions[offset + 5] = shot.toZ
+    }
+
+    this.enemyTraceLines.geometry.attributes.position!.needsUpdate = true
   }
 
   private buildLights(): void {
@@ -281,6 +322,13 @@ export class Renderer {
     const traceMaterial = this.traceLines.material as LineBasicMaterial
     traceMaterial.opacity = this.traceTimer * 0.7
     this.traceLines.visible = this.traceTimer > 0.01
+
+    // Meia-vida bem maior: o rastro inimigo e a unica pista de onde veio o
+    // dano, e some antes de ser lido se decair na mesma velocidade do seu.
+    this.enemyTraceTimer = decay(this.enemyTraceTimer, deltaMs, 260)
+    const enemyMaterial = this.enemyTraceLines.material as LineBasicMaterial
+    enemyMaterial.opacity = this.enemyTraceTimer * 0.9
+    this.enemyTraceLines.visible = this.enemyTraceTimer > 0.01
   }
 
   render(): void {
