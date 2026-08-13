@@ -34,6 +34,14 @@ export interface InputOptions {
   /** Radianos de rotacao por pixel de mouse. */
   sensitivity?: number
   invertPitch?: boolean
+  /**
+   * Aceitar comandos sem o ponteiro preso.
+   *
+   * Existe para medicao: o navegador so concede pointer lock a partir de um
+   * gesto real do usuario, o que impede medir latencia de forma automatizada.
+   * Ligado por `?test=1`, nunca no jogo normal.
+   */
+  allowUnlocked?: boolean
 }
 
 export class Input {
@@ -45,6 +53,7 @@ export class Input {
 
   private readonly sensitivity: number
   private readonly pitchSign: number
+  private readonly allowUnlocked: boolean
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -52,11 +61,12 @@ export class Input {
   ) {
     this.sensitivity = options.sensitivity ?? 0.0022
     this.pitchSign = options.invertPitch ? 1 : -1
+    this.allowUnlocked = options.allowUnlocked ?? false
   }
 
-  /** Estado atual do pointer lock. A simulacao pausa quando falso. */
+  /** A simulacao deve avancar? Pausa quando o ponteiro nao esta preso. */
   get isLocked(): boolean {
-    return this.locked
+    return this.locked || this.allowUnlocked
   }
 
   attach(): void {
@@ -90,7 +100,7 @@ export class Input {
    * segundo recebe rotacao zero em vez de repetir a do primeiro.
    */
   consume(): TicCommand {
-    if (!this.locked) {
+    if (!this.isLocked) {
       this.pendingYaw = 0
       this.pendingPitch = 0
       return EMPTY_COMMAND
@@ -134,7 +144,7 @@ export class Input {
   }
 
   private readonly onMouseMove = (event: MouseEvent) => {
-    if (!this.locked) return
+    if (!this.isLocked) return
     this.pendingYaw -= event.movementX * this.sensitivity
     this.pendingPitch += this.pitchSign * event.movementY * this.sensitivity
   }

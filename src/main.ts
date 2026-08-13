@@ -42,8 +42,11 @@ const hud = new Hud({
   toast: requireElement<HTMLDivElement>('#toast'),
 })
 
+/** `?test=1` dispensa o pointer lock, para permitir medicao automatizada. */
+const measurementMode = new URLSearchParams(location.search).get('test') === '1'
+
 let game = new Game()
-const input = new Input(canvas)
+const input = new Input(canvas, { allowUnlocked: measurementMode })
 const renderer = new Renderer(canvas, game.arena)
 const enemyRenderer = new EnemyRenderer(renderer.scene)
 const sfx = new Sfx()
@@ -198,7 +201,9 @@ function beginPlaying(): void {
   gameOverScreen.hidden = true
   hud.show()
   sfx.resume()
-  input.requestLock()
+  // Em medicao nao pedimos o ponteiro: o navegador recusaria fora de um gesto
+  // do usuario, e a recusa deixaria a partida congelada.
+  if (!measurementMode) input.requestLock()
 }
 
 function endGame(): void {
@@ -240,6 +245,8 @@ document.addEventListener('pointerlockchange', () => {
 
 input.attach()
 loop.start()
+
+if (measurementMode) beginPlaying()
 
 // Ponto de inspecao para a verificacao automatizada: o navegador headless le
 // estes valores em vez de depender de leitura de imagem.
