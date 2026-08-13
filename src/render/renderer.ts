@@ -87,7 +87,7 @@ export class Renderer {
 
     // Luz que acompanha o jogador. Alcance maior que a metade da arena para
     // que o inimigo se destaque do fundo antes de chegar perto demais.
-    this.playerLight = new PointLight(0xffdcb4, 2.4, 2400, 1.0)
+    this.playerLight = new PointLight(0xfff2e0, 1.3, 1500, 1.1)
     this.scene.add(this.playerLight)
 
     this.muzzleFlash = this.buildViewmodel()
@@ -196,8 +196,11 @@ export class Renderer {
     // vira adivinhacao. Os valores ja subiram duas vezes depois de olhar a
     // tela em vez de confiar no numero — monitor e captura de tela mentem em
     // direcoes opostas, e no fim quem decide e o olho de quem joga.
-    this.scene.add(new AmbientLight(0x9a94a2, 3.1))
-    this.scene.add(new HemisphereLight(0xbcc6e0, 0x6a5540, 2.4))
+    // Luz de cima levemente fria contra textura quente: sem isso a arena
+    // inteira puxa para o vermelho quando a iluminacao sobe, e o imp — que e
+    // laranja — deixa de se destacar do fundo.
+    this.scene.add(new AmbientLight(0x8e909c, 2.3))
+    this.scene.add(new HemisphereLight(0xc2ccdf, 0x585048, 1.7))
   }
 
   private buildArena(arena: Arena): void {
