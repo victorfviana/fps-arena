@@ -28,6 +28,14 @@ por ganho menor que 0,3 ponto.
 vive em `tests/rubrica.test.ts` — nao e prosa, e teste. Mexer no nucleo exige
 rodar aquele arquivo e conferir que nenhuma dimensao caiu.
 
+**Pesos corrigidos depois de o jogador testar.** Legibilidade de combate subiu
+de 10% para 25% e ganhou arquivo proprio (`tests/legibilidade.test.ts`): foi
+por ela que o jogo falhou na mao de quem jogou, com inimigos estaticos e tiro
+invisivel, enquanto as dimensoes finas de fidelidade iam bem. Dimensao que
+descreve se o jogador ENTENDE o que acontece vale mais que precisao de
+constante — 1% de erro na velocidade nao custa nada a quem joga; nao saber de
+onde veio o tiro custa a partida.
+
 Licao que vale para a proxima rodada: os tres defeitos da iteracao 1 estavam no
 **instrumento de medicao**, nao no jogo. Rubrica que aprova de primeira e
 suspeita — reveja se algum teste e verdadeiro por vacuidade antes de comemorar.
