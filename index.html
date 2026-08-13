@@ -5,33 +5,127 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>FPS Arena</title>
     <style>
-      :root { color-scheme: dark; }
+      :root {
+        color-scheme: dark;
+        --ink: #e8e4dc;
+        --dim: #8f8a80;
+        --accent: #c8703c;
+        --danger: #d0453a;
+      }
       * { margin: 0; padding: 0; box-sizing: border-box; }
-      html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0c; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #14120f; }
       body { font-family: ui-monospace, "Cascadia Mono", Menlo, monospace; }
 
       #canvas { display: block; width: 100%; height: 100%; cursor: none; }
 
-      #overlay {
+      /* ---------- HUD ---------- */
+
+      #hud {
+        position: fixed;
+        inset: 0;
+        z-index: 4;
+        pointer-events: none;
+        color: var(--ink);
+      }
+      #hud[hidden] { display: none; }
+
+      #crosshair {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: 22px;
+        height: 22px;
+        transform: translate(-50%, -50%);
+        opacity: 0.85;
+      }
+      #crosshair::before,
+      #crosshair::after {
+        content: "";
+        position: absolute;
+        background: var(--ink);
+        box-shadow: 0 0 2px #000;
+      }
+      #crosshair::before { top: 50%; left: 0; width: 100%; height: 1px; margin-top: -0.5px; }
+      #crosshair::after { left: 50%; top: 0; height: 100%; width: 1px; margin-left: -0.5px; }
+
+      .corner {
+        position: absolute;
+        bottom: 22px;
+        display: flex;
+        align-items: baseline;
+        gap: 0.5rem;
+        text-shadow: 0 1px 3px #000;
+      }
+      #vitals { left: 28px; }
+      #tally { right: 28px; flex-direction: column; align-items: flex-end; gap: 0.15rem; }
+
+      .label {
+        font-size: 0.6rem;
+        letter-spacing: 0.22em;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+      .value { font-size: 2.1rem; font-weight: 700; line-height: 1; }
+      #health.low { color: var(--danger); }
+
+      #wave-banner {
+        position: absolute;
+        top: 26px;
+        left: 50%;
+        transform: translateX(-50%);
+        text-align: center;
+        text-shadow: 0 1px 3px #000;
+      }
+      #wave-banner .value { font-size: 1.3rem; }
+
+      /* Vinheta que pisca ao levar dano — periferica de proposito, para
+         avisar sem tapar o centro da tela. */
+      #damage-flash {
+        position: absolute;
+        inset: 0;
+        background: radial-gradient(ellipse at center,
+          rgba(208, 69, 58, 0) 42%, rgba(208, 69, 58, 0.62) 100%);
+        opacity: 0;
+        transition: opacity 260ms ease-out;
+      }
+      #damage-flash.on { opacity: 1; transition-duration: 40ms; }
+
+      #toast {
+        position: absolute;
+        top: 44%;
+        left: 50%;
+        transform: translateX(-50%);
+        font-size: 1.6rem;
+        letter-spacing: 0.3em;
+        text-transform: uppercase;
+        opacity: 0;
+        transition: opacity 420ms ease-out;
+        text-shadow: 0 2px 8px #000;
+      }
+      #toast.on { opacity: 1; transition-duration: 90ms; }
+
+      /* ---------- Telas ---------- */
+
+      .screen {
         position: fixed;
         inset: 0;
         display: grid;
         place-content: center;
         gap: 1.25rem;
         text-align: center;
-        background: rgba(10, 10, 12, 0.92);
-        color: #e8e4dc;
+        background: rgba(14, 12, 10, 0.93);
+        color: var(--ink);
         z-index: 10;
       }
-      #overlay[hidden] { display: none; }
-      #overlay h1 {
+      .screen[hidden] { display: none; }
+      .screen h1 {
         font-size: clamp(1.75rem, 6vw, 3rem);
         letter-spacing: 0.28em;
         font-weight: 700;
         text-transform: uppercase;
       }
-      #overlay p { color: #8f8a80; line-height: 1.7; font-size: 0.9rem; }
-      #overlay kbd {
+      .screen p { color: var(--dim); line-height: 1.7; font-size: 0.9rem; }
+      .screen kbd {
         display: inline-block;
         padding: 0.15em 0.5em;
         border: 1px solid #3a3630;
@@ -39,7 +133,7 @@
         background: #1a1815;
         color: #c9c3b8;
       }
-      #start {
+      .screen button {
         justify-self: center;
         margin-top: 0.5rem;
         padding: 0.85rem 2.5rem;
@@ -47,16 +141,17 @@
         font-size: 0.85rem;
         letter-spacing: 0.2em;
         text-transform: uppercase;
-        color: #0a0a0c;
-        background: #c8703c;
+        color: #14120f;
+        background: var(--accent);
         border: 0;
         border-radius: 2px;
         cursor: pointer;
       }
-      #start:hover { background: #dd8148; }
-      #start:focus-visible { outline: 2px solid #e8e4dc; outline-offset: 3px; }
+      .screen button:hover { background: #dd8148; }
+      .screen button:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
 
-      /* Diagnostico: numeros que a rubrica de qualidade le. */
+      #final-score { font-size: 2.4rem; font-weight: 700; }
+
       #stats {
         position: fixed;
         top: 8px;
@@ -76,16 +171,51 @@
   </head>
   <body>
     <canvas id="canvas"></canvas>
+
+    <div id="hud" hidden>
+      <div id="damage-flash"></div>
+      <div id="crosshair"></div>
+
+      <div id="wave-banner">
+        <div class="label">Onda</div>
+        <div class="value" id="wave">1</div>
+      </div>
+
+      <div class="corner" id="vitals">
+        <div>
+          <div class="label">Vida</div>
+          <div class="value" id="health">100</div>
+        </div>
+      </div>
+
+      <div class="corner" id="tally">
+        <div class="label">Pontos</div>
+        <div class="value" id="score">0</div>
+        <div class="label"><span id="remaining">0</span> restantes</div>
+      </div>
+
+      <div id="toast"></div>
+    </div>
+
     <pre id="stats" hidden></pre>
 
-    <div id="overlay">
+    <div id="overlay" class="screen">
       <h1>FPS Arena</h1>
       <p>
         <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> mover &middot;
-        <kbd>Shift</kbd> correr &middot; mouse olhar<br />
-        <kbd>Esc</kbd> libera o cursor &middot; <kbd>F3</kbd> diagnostico
+        <kbd>Shift</kbd> correr &middot; mouse olhar &middot; clique atira<br />
+        <kbd>Esc</kbd> libera o cursor &middot; <kbd>M</kbd> silencia &middot;
+        <kbd>F3</kbd> diagnostico
       </p>
       <button id="start" type="button">Clique para jogar</button>
+    </div>
+
+    <div id="gameover" class="screen" hidden>
+      <h1>Fim</h1>
+      <p>Voce caiu na onda <span id="final-wave">1</span>.</p>
+      <div id="final-score">0</div>
+      <p class="label">pontos</p>
+      <button id="restart" type="button">Jogar de novo</button>
     </div>
 
     <script type="module" src="/src/main.ts"></script>

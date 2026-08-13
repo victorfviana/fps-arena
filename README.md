@@ -21,8 +21,9 @@ Requer Node 18 ou superior. No WSL, carregue o nvm antes:
 |---|---|
 | W A S D | mover |
 | Shift | correr |
-| Mouse | olhar |
+| Mouse | olhar, clique atira |
 | Esc | libera o cursor |
+| M | silencia o som |
 | F3 | painel de diagnostico |
 
 ## Como o jogo e medido
@@ -49,5 +50,19 @@ Numeros de referencia atualmente travados:
 
 ## Estado
 
-Fundacao pronta e verificada: loop de passo fixo, colisao, arena, movimento do
-jogador e render. Faltam armas, inimigos, ondas, HUD e audio.
+Jogavel de ponta a ponta: mover, atirar, matar, sobreviver a ondas crescentes,
+morrer e recomecar. Movimento, arma, inimigos, ondas, HUD e audio prontos, com
+127 testes cobrindo a simulacao.
+
+Falta: rodar o loop adversarial sobre o nucleo sensorial e publicar.
+
+### Divergencias declaradas do benchmark
+
+Escolhas de escopo, nao erros de fidelidade:
+
+- O imp e corpo a corpo. No DOOM ele lanca bola de fogo; projetil viajante e
+  escopo proprio e nao entrou nesta etapa.
+- O dano e a cadencia de ataque dos inimigos sao calibragem de dificuldade
+  desta arena, nao valores do original — o DOOM nao e um jogo de ondas.
+- A aleatoriedade usa gerador com semente proprio, e nao a tabela `P_Random`
+  de 256 valores, que nao encontrei em fonte citavel.

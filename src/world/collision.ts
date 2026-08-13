@@ -12,12 +12,21 @@ export interface Vec2 {
   z: number
 }
 
-/** Segmento de parede, do ponto A ao ponto B. */
+/**
+ * Segmento de parede, do ponto A ao ponto B.
+ *
+ * `height` separa o que barra o corpo do que barra a visao. Todo obstaculo
+ * barra movimento, mas so barra tiro e linha de visao quem for mais alto que
+ * o olho de quem olha. Sem essa distincao nao existe obstaculo baixo: um
+ * bloco na altura do joelho esconderia o inimigo por completo.
+ */
 export interface Wall {
   ax: number
   az: number
   bx: number
   bz: number
+  /** Altura em map units. Ausente significa do chao ao teto. */
+  height?: number
 }
 
 /** Ponto do segmento AB mais proximo de P. */
@@ -133,8 +142,9 @@ export function moveWithCollision(
 /**
  * Ha linha de visao livre entre dois pontos?
  *
- * Teste de interseccao segmento-a-segmento, usado depois pelo tiro hitscan e
- * pela decisao de ataque dos inimigos.
+ * @param sightHeight altura da linha de visao. Paredes mais baixas que isso
+ *   sao ignoradas — e por onde se enxerga e se atira por cima de um obstaculo.
+ *   Omitido, toda parede barra.
  */
 export function segmentBlocked(
   fromX: number,
@@ -142,13 +152,21 @@ export function segmentBlocked(
   toX: number,
   toZ: number,
   walls: readonly Wall[],
+  sightHeight?: number,
 ): boolean {
   for (const wall of walls) {
+    if (!blocksSight(wall, sightHeight)) continue
     if (segmentsIntersect(fromX, fromZ, toX, toZ, wall.ax, wall.az, wall.bx, wall.bz)) {
       return true
     }
   }
   return false
+}
+
+/** A parede e alta o bastante para barrar uma visada nesta altura? */
+export function blocksSight(wall: Wall, sightHeight?: number): boolean {
+  if (sightHeight === undefined) return true
+  return (wall.height ?? Infinity) > sightHeight
 }
 
 function segmentsIntersect(

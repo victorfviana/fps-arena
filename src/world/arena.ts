@@ -42,11 +42,12 @@ export function boxToWalls(box: Box): Wall[] {
   const minZ = box.z - halfDepth
   const maxZ = box.z + halfDepth
 
+  const { height } = box
   return [
-    { ax: minX, az: minZ, bx: maxX, bz: minZ },
-    { ax: maxX, az: minZ, bx: maxX, bz: maxZ },
-    { ax: maxX, az: maxZ, bx: minX, bz: maxZ },
-    { ax: minX, az: maxZ, bx: minX, bz: minZ },
+    { ax: minX, az: minZ, bx: maxX, bz: minZ, height },
+    { ax: maxX, az: minZ, bx: maxX, bz: maxZ, height },
+    { ax: maxX, az: maxZ, bx: minX, bz: maxZ, height },
+    { ax: minX, az: maxZ, bx: minX, bz: minZ, height },
   ]
 }
 
@@ -76,9 +77,14 @@ export function createArena(): Arena {
     { x: pillarOffset, z: -pillarOffset, width: 128, depth: 128, height: wallHeight },
     { x: -pillarOffset, z: pillarOffset, width: 128, depth: 128, height: wallHeight },
     { x: pillarOffset, z: pillarOffset, width: 128, depth: 128, height: wallHeight },
-    // Blocos baixos: cobertura parcial, sem fechar a leitura do combate.
-    { x: 0, z: -GRID_CELL * 5, width: 320, depth: 64, height: 64 },
-    { x: 0, z: GRID_CELL * 5, width: 320, depth: 64, height: 64 },
+    // Obstaculos baixos: barram o corpo, nao a visada. Ficam abaixo da altura
+    // do olho de proposito — a 64 unidades eles escondiam o inimigo por
+    // inteiro e, plantados entre o centro e os pontos de nascimento, faziam o
+    // jogador no meio da arena nao conseguir acertar quase ninguem.
+    { x: 0, z: -GRID_CELL * 5, width: 320, depth: 64, height: 28 },
+    { x: 0, z: GRID_CELL * 5, width: 320, depth: 64, height: 28 },
+    { x: -GRID_CELL * 5, z: 0, width: 64, depth: 320, height: 28 },
+    { x: GRID_CELL * 5, z: 0, width: 64, depth: 320, height: 28 },
   ]
 
   const walls = [...perimeter, ...boxes.flatMap(boxToWalls)]
