@@ -24,6 +24,14 @@ So no nucleo sensorial: **movimento, arma e reacao do inimigo**, avaliados
 juntos, porque game feel e emergente da combinacao. Teto de 2 iteracoes, parada
 por ganho menor que 0,3 ponto.
 
+**Ja executado**, em 13/08/2026: parou por nota de corte, media 4,45. A rubrica
+vive em `tests/rubrica.test.ts` — nao e prosa, e teste. Mexer no nucleo exige
+rodar aquele arquivo e conferir que nenhuma dimensao caiu.
+
+Licao que vale para a proxima rodada: os tres defeitos da iteracao 1 estavam no
+**instrumento de medicao**, nao no jogo. Rubrica que aprova de primeira e
+suspeita — reveja se algum teste e verdadeiro por vacuidade antes de comemorar.
+
 Fora do loop, com verificacao executavel normal: render, arena, ondas, HUD,
 audio, build. Essas dimensoes nao tem benchmark real — rubrica ali seria
 opiniao a custo de loop.

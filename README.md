@@ -3,6 +3,8 @@
 Shooter em primeira pessoa que roda no navegador, calibrado contra as
 constantes reais do DOOM (1993).
 
+**Jogar: https://victorfviana.github.io/fps-arena/**
+
 ## Rodar
 
 ```bash
@@ -50,11 +52,16 @@ Numeros de referencia atualmente travados:
 
 ## Estado
 
-Jogavel de ponta a ponta: mover, atirar, matar, sobreviver a ondas crescentes,
-morrer e recomecar. Movimento, arma, inimigos, ondas, HUD e audio prontos, com
-127 testes cobrindo a simulacao.
+Jogavel e publicado. Movimento, arma, inimigos, ondas, HUD e audio prontos,
+com 157 testes cobrindo a simulacao.
 
-Falta: rodar o loop adversarial sobre o nucleo sensorial e publicar.
+O loop adversarial rodou sobre o nucleo sensorial e parou por nota de corte
+atingida, com media 4,45 na segunda de duas iteracoes. O scorecard esta em
+`docs/conversations/2026-08-13-loop-adversarial.md`.
+
+Nao verificado: framerate real e custo do render — dependem de um navegador
+visivel, e a aba fica oculta sob automacao. A simulacao, essa sim medida,
+consome 0,12% de um quadro de 60 fps com a arena cheia.
 
 ### Divergencias declaradas do benchmark
 
