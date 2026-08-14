@@ -23,10 +23,22 @@ Requer Node 18 ou superior. No WSL, carregue o nvm antes:
 |---|---|
 | W A S D | mover |
 | Shift | correr |
-| Mouse | olhar, clique atira |
+| Botao esquerdo | atirar |
+| Botao direito | mirar (luneta, no rifle) |
+| 1 / 2 / Q / roda | trocar de arma |
 | Esc | libera o cursor |
 | M | silencia o som |
 | F3 | painel de diagnostico |
+
+## Arsenal
+
+| Arma | No quadril | Apontada |
+|---|---|---|
+| Escopeta | 7 chumbos, dispersao de 5,9 graus | dispersao fecha para 2,4 graus |
+| Rifle | 1 tiro, dispersao de 3,4 graus | luneta, dispersao de 0,12 grau |
+
+Apontar custa velocidade — 72% com a escopeta, 45% com o rifle. E a unica
+concessao ao modelo moderno de locomocao: a base continua a do DOOM.
 
 ## Como o jogo e medido
 

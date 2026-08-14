@@ -58,6 +58,18 @@ nao verificado — nunca construir um desvio e seguir medindo por ele.
 
 `tests/menu.test.ts` guarda essa regressao.
 
+## Inspecionar estado transitorio sob automacao
+
+A aba fica oculta: `requestAnimationFrame` nao roda e transicao CSS congela.
+Pior, **a captura de tela reativa a aba** e o loop volta a rodar, desfazendo o
+estado montado antes do print — a mira abre sozinha e a tela capturada nao e a
+que se queria ver.
+
+Receita: montar o estado, `loop.advance()` uma vez, **`loop.stop()`**, so
+entao capturar. E usar `__fpsArena.trocarArma` em vez de mexer em `game.aim`
+direto — mexer no estado contorna o tratador de eventos do loop e mede algo que
+o jogo real nunca atinge.
+
 ## Verificacao antes de apresentar
 
 Ordem obrigatoria, do mais barato ao mais caro:
