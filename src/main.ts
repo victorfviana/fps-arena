@@ -133,8 +133,7 @@ const loop = new FixedTimestepLoop({
 
     if (events.fired) {
       renderer.onFire(events.traces, game.eyeY)
-      if (events.weaponFired === 'shotgun') sfx.shotgun()
-      else sfx.pistol()
+      sfx.shot(events.weaponFired === 'rifle' ? 'rifle' : 'shotgun')
     }
     if (events.hits > 0) sfx.hit()
     if (events.kills > 0) sfx.enemyDeath()
@@ -150,7 +149,19 @@ const loop = new FixedTimestepLoop({
       // Aponta para o golpe mais forte do tic. Varios avisos simultaneos
       // competindo pela mesma borda da tela nao informam nada.
       const pior = events.enemyShots.reduce((a, b) => (b.damage > a.damage ? b : a))
-      hud.showDamageDirection(anguloRelativo(pior.fromX, pior.fromZ))
+      const angulo = anguloRelativo(pior.fromX, pior.fromZ)
+      hud.showDamageDirection(angulo)
+
+      // O mesmo aviso pelo ouvido, que costuma chegar antes do olho: o disparo
+      // toca no lado de onde veio, abafado conforme a distancia.
+      for (const tiro of events.enemyShots) {
+        if (tiro.melee) continue
+        const distancia = Math.hypot(
+          tiro.fromX - game.player.x,
+          tiro.fromZ - game.player.z,
+        )
+        sfx.enemyShot(anguloRelativo(tiro.fromX, tiro.fromZ), distancia)
+      }
     }
 
     if (events.damageTaken > 0) {
@@ -166,6 +177,7 @@ const loop = new FixedTimestepLoop({
     if (events.weaponSwapped) {
       renderer.setWeapon(events.weaponSwapped)
       weaponLabel.textContent = LOADOUT[events.weaponSwapped].label
+      sfx.weaponSwap()
     }
 
     // Acumula o giro do mouse deste tic para o atraso da arma no desenho.
