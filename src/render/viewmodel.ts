@@ -172,7 +172,9 @@ export function construirEscopeta(): ArmaMontada {
   receiver.position.set(0, 0, -0.02)
   grupo.add(receiver)
 
-  const cano = new Mesh(new CylinderGeometry(0.019, 0.020, 0.52, 14), MATERIAIS.metalEscuro)
+  // Cano em metal claro, nao escuro: fino e contra parede em sombra, o cano
+  // escuro simplesmente desaparecia e a arma parecia terminar no receiver.
+  const cano = new Mesh(new CylinderGeometry(0.021, 0.022, 0.52, 14), MATERIAIS.metalGasto)
   cano.rotation.x = Math.PI / 2
   cano.position.set(0, 0.021, -0.42)
   grupo.add(cano)
@@ -402,12 +404,12 @@ export class ViewModel {
     // grupo. Com a raiz a 0,34 a coronha ficava a 8 cm do olho e tomava metade
     // da tela; empurrando para 0,58 ela vai para uns 32 cm, que e onde a
     // coronha de uma arma encostada no ombro realmente fica.
-    const quadrilX = 0.12
-    const quadrilY = -0.10
-    const quadrilZ = -0.58
+    const quadrilX = 0.115
+    const quadrilY = -0.062
+    const quadrilZ = -0.74
     const alvoX = arma.alinhamentoAds.x
     const alvoY = arma.alinhamentoAds.y
-    const alvoZ = -0.42
+    const alvoZ = -0.50
 
     // Embalo da caminhada, que some conforme o jogador aponta: quem esta com a
     // arma no olho segura a respiracao.
