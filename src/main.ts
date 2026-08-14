@@ -437,7 +437,12 @@ Object.assign(window, {
 
       // Energia por banda, por cruzamentos de zero em janelas curtas: caro
       // fazer FFT aqui, e a taxa de cruzamento ja separa grave de agudo.
+      //
+      // O limiar de energia e relativo ao pico. Fixo em 1e-6, janelas de cauda
+      // quase inaudivel entravam na conta com zero cruzamentos e o brilho do
+      // meio e do fim saia zerado, o que nao media nada.
       const janela = Math.floor(taxa * 0.02)
+      const limiarEnergia = pico * pico * janela * 0.002
       const bandas: number[] = []
       for (let inicio = 0; inicio + janela < canal.length; inicio += janela) {
         let cruzamentos = 0
@@ -446,7 +451,9 @@ Object.assign(window, {
           if ((canal[i]! >= 0) !== (canal[i - 1]! >= 0)) cruzamentos++
           energia += canal[i]! * canal[i]!
         }
-        if (energia > 1e-6) bandas.push(Math.round((cruzamentos * taxa) / (2 * janela)))
+        if (energia > limiarEnergia) {
+          bandas.push(Math.round((cruzamentos * taxa) / (2 * janela)))
+        }
       }
 
       return {

@@ -57,11 +57,14 @@ export class Sfx {
       // limite digital e viram distorcao suja. O compressor segura os picos
       // sem achatar o ataque, que e justamente o que da impacto.
       const compressor = ctx.createDynamicsCompressor()
-      compressor.threshold.value = -14
-      compressor.knee.value = 6
-      compressor.ratio.value = 5
-      compressor.attack.value = 0.002
-      compressor.release.value = 0.14
+      compressor.threshold.value = -9
+      compressor.knee.value = 8
+      compressor.ratio.value = 4
+      // Ataque de meio milissegundo: com os 2 ms anteriores, o compressor
+      // chegava depois do pico e achatava justamente o transiente que da
+      // impacto — o oposto do que se quer dele.
+      compressor.attack.value = 0.0005
+      compressor.release.value = 0.16
 
       this.master = ctx.createGain()
       this.master.gain.value = 0.5
@@ -82,7 +85,8 @@ export class Sfx {
       this.reverbSend.connect(convolver)
 
       const retornoReverb = ctx.createGain()
-      retornoReverb.gain.value = 0.5
+      // O ambiente acompanha o disparo, nao compete com ele.
+      retornoReverb.gain.value = 0.3
       convolver.connect(retornoReverb)
       retornoReverb.connect(this.master)
     }
@@ -365,9 +369,13 @@ function criarRespostaAoImpulso(ctx: BaseAudioContext, segundos: number): AudioB
   const buffer = ctx.createBuffer(2, quadros, taxa)
 
   // Atrasos das primeiras reflexoes, em milissegundos, e sua forca.
+  // Forcas bem abaixo do som direto. Na primeira versao chegavam a 0,62 e o
+  // pico do disparo caia na reflexao de 23 ms, medido — ou seja, a arena soava
+  // mais alto que a propria arma. E o som de quem esta longe do tiro, nao de
+  // quem atirou.
   const reflexoes: Array<[number, number]> = [
-    [11, 0.62], [17, 0.48], [23, 0.55], [31, 0.36],
-    [43, 0.30], [57, 0.24], [73, 0.18],
+    [11, 0.26], [17, 0.20], [23, 0.23], [31, 0.15],
+    [43, 0.12], [57, 0.10], [73, 0.075],
   ]
 
   for (let canal = 0; canal < 2; canal++) {
