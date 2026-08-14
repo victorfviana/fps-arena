@@ -242,8 +242,13 @@ export class Sfx {
       // Componente de pressao: quase infrassom, sentido mais que ouvido.
       this.tom({ freq: 118, duracao: 0.16, ganho: 0.26 * v, tipo: 'sine', freqFinal: 42, reverb: 0.5 })
       // Bomba da escopeta, 130 ms depois: dois cliques metalicos.
-      this.camadaRuido({ duracao: 0.035, ganho: 0.16, tipo: 'bandpass', freq: 2400, q: 3, atraso: 0.13 })
-      this.camadaRuido({ duracao: 0.045, ganho: 0.19, tipo: 'bandpass', freq: 1700, q: 3, atraso: 0.24 })
+      //
+      // Bem abaixo do disparo. Quando as camadas principais foram reduzidas e
+      // estas nao, o clique de 240 ms virou o ponto mais alto do som inteiro —
+      // medido no envelope. Mecanica de arma se ouve depois do tiro, nunca por
+      // cima dele.
+      this.camadaRuido({ duracao: 0.035, ganho: 0.055, tipo: 'bandpass', freq: 2400, q: 3, atraso: 0.13 })
+      this.camadaRuido({ duracao: 0.045, ganho: 0.065, tipo: 'bandpass', freq: 1700, q: 3, atraso: 0.24 })
       return
     }
 
@@ -254,7 +259,7 @@ export class Sfx {
       this.camadaRuido({ duracao: 0.045, ganho: 0.44 * v, tipo: 'highpass', freq: 3800, freqFinal: 9000, reverb: 0.35 })
       this.tom({ freq: 190, duracao: 0.09, ganho: 0.18 * v, tipo: 'sine', freqFinal: 70, reverb: 0.4 })
       // Ferrolho voltando, bem mais rapido que a bomba da escopeta.
-      this.camadaRuido({ duracao: 0.03, ganho: 0.14, tipo: 'bandpass', freq: 3200, q: 4, atraso: 0.055 })
+      this.camadaRuido({ duracao: 0.03, ganho: 0.05, tipo: 'bandpass', freq: 3200, q: 4, atraso: 0.055 })
       return
     }
 
