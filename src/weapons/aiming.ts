@@ -8,6 +8,7 @@
  */
 
 import { LOADOUT, LOADOUT_ORDER, adsStep, type LoadoutId, type LoadoutWeapon } from './loadout'
+import type { WeaponState } from './weapon'
 
 /** Tics para guardar uma arma e sacar a outra. */
 export const SWAP_TICS = 9
@@ -48,9 +49,16 @@ export function canSwap(aim: AimState): boolean {
  *
  * Apontado, a troca cancela a mira: sacar outra arma ja mirando seria um
  * atalho que anula o custo de tempo do ADS.
+ *
+ * Recusa tambem enquanto a arma ativa tem um disparo em voo (`fuseTics >=
+ * 0`): o dano ainda nao saiu. Hoje a aritmetica torna isso inalcancavel — a
+ * troca mais rapida leva pelo menos 5 tics e o maior `delayTics` do arsenal e
+ * 3 — mas nada impedia essa combinacao antes desta guarda, e uma arma nova
+ * com `delayTics` maior tornaria isso alcancavel em silencio.
  */
-export function requestSwap(aim: AimState, to: LoadoutId): boolean {
+export function requestSwap(aim: AimState, to: LoadoutId, weapon: WeaponState): boolean {
   if (to === aim.current || !canSwap(aim)) return false
+  if (weapon.fuseTics >= 0) return false
 
   aim.pending = to
   aim.swapTics = SWAP_TICS
@@ -59,10 +67,10 @@ export function requestSwap(aim: AimState, to: LoadoutId): boolean {
 }
 
 /** Alterna para a proxima arma do arsenal. */
-export function requestNextWeapon(aim: AimState): boolean {
+export function requestNextWeapon(aim: AimState, weapon: WeaponState): boolean {
   const index = LOADOUT_ORDER.indexOf(aim.current)
   const next = LOADOUT_ORDER[(index + 1) % LOADOUT_ORDER.length]!
-  return requestSwap(aim, next)
+  return requestSwap(aim, next, weapon)
 }
 
 /**

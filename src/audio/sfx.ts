@@ -27,11 +27,20 @@ const REVERB_SEGUNDOS = 1.6
 /** Buffer de ruido pre-gerado, para nao alocar a cada disparo. */
 const RUIDO_SEGUNDOS = 2
 
-export type ShotKind = 'shotgun' | 'rifle' | 'pistol'
+export type ShotKind = 'shotgun' | 'rifle'
 
 export class Sfx {
   private context: BaseAudioContext | null = null
   private master: GainNode | null = null
+  /**
+   * Barramento seco, em paralelo ao compressor, direto para o destino.
+   *
+   * Nenhum caminho antigo escapava de saturacao+compressor: o ataque medido
+   * do disparo ficava em 9-10 ms so por causa da cadeia, nao do envelope (que
+   * sobe em 0,4 ms). Camadas curtissimas marcadas `seco: true` usam este
+   * barramento para a borda do ataque chegar ao destino sem esperar os dois.
+   */
+  private dryBus: GainNode | null = null
   /** Entrada da cauda do ambiente; tudo que deve ecoar passa por aqui. */
   private reverbSend: GainNode | null = null
   private ruido: AudioBuffer | null = null
@@ -75,6 +84,12 @@ export class Sfx {
       this.master.connect(compressor)
       compressor.connect(ctx.destination)
 
+      // Paralelo ao compressor, nao em serie: e assim que a borda seca escapa
+      // do guarda-corpo sem herdar o releitor de 0,8 ms do compressor.
+      this.dryBus = ctx.createGain()
+      this.dryBus.gain.value = 0.9
+      this.dryBus.connect(ctx.destination)
+
       this.saturacao = ctx.createWaveShaper()
       this.saturacao.curve = curvaDeSaturacao(2.2)
       this.saturacao.oversample = '2x'
@@ -99,9 +114,28 @@ export class Sfx {
     if ('resume' in this.context) void (this.context as AudioContext).resume()
   }
 
+  /**
+   * Retoma o contexto sozinho quando a aba volta a ficar visivel.
+   *
+   * Chrome e Safari suspendem o AudioContext ao trocar de aba; sem isso o
+   * jogador volta e o jogo fica mudo ate o proximo gesto que dispare
+   * `resume()` de novo. So registra o listener se `document` existir — o
+   * contexto offline de `medirTiro` nao tem (nem precisa).
+   */
+  instalarAutoResume(): void {
+    if (typeof document === 'undefined') return
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState !== 'visible') return
+      const ctx = this.context
+      if (ctx && 'state' in ctx && (ctx as AudioContext).state === 'suspended') this.resume()
+    })
+  }
+
   toggleMute(): boolean {
     this.muted = !this.muted
     if (this.master) this.master.gain.value = this.muted ? 0 : 0.72
+    // O dryBus e paralelo ao master, entao mudo nele nao silencia o dryBus.
+    if (this.dryBus) this.dryBus.gain.value = this.muted ? 0 : 0.9
     return this.muted
   }
 
@@ -124,9 +158,17 @@ export class Sfx {
     atraso?: number
     reverb?: number
     pan?: number
+    /**
+     * Quando true, pula saturacao+compressor e vai direto ao dryBus (destino
+     * fixo). Nunca cria envio de reverb: a cauda so faz sentido para o som
+     * molhado, e o barramento seco existe justamente para nao esperar por ela.
+     */
+    seco?: boolean
   }): void {
     const ctx = this.context
-    if (!ctx || !this.ruido || !this.saturacao) return
+    if (!ctx || !this.ruido) return
+    const destino = opcoes.seco ? this.dryBus : this.saturacao
+    if (!destino) return
 
     const inicio = ctx.currentTime + (opcoes.atraso ?? 0)
     const fonte = ctx.createBufferSource()
@@ -159,9 +201,9 @@ export class Sfx {
     fonte.connect(filtro)
     filtro.connect(envelope)
     envelope.connect(panner)
-    panner.connect(this.saturacao)
+    panner.connect(destino)
 
-    if (opcoes.reverb && this.reverbSend) {
+    if (opcoes.reverb && this.reverbSend && !opcoes.seco) {
       const envio = ctx.createGain()
       envio.gain.value = opcoes.reverb
       panner.connect(envio)
@@ -239,6 +281,9 @@ export class Sfx {
       this.camadaRuido({ duracao: 0.20, ganho: 0.32 * v, tipo: 'bandpass', freq: 1100, freqFinal: 380, q: 0.7, reverb: 0.7 })
       // Estalo: curtissimo e agudo, o que faz parecer perto.
       this.camadaRuido({ duracao: 0.05, ganho: 0.30 * v, tipo: 'highpass', freq: 2600, freqFinal: 6500, reverb: 0.3 })
+      // Borda seca: nao substitui o estalo acima (que da o corpo) — so cobre
+      // os primeiros ~10 ms que saturacao+compressor atrasavam em 9-10 ms.
+      this.camadaRuido({ duracao: 0.010, ganho: 0.16 * v, tipo: 'highpass', freq: 3200, seco: true })
       // Componente de pressao: quase infrassom, sentido mais que ouvido.
       this.tom({ freq: 118, duracao: 0.16, ganho: 0.26 * v, tipo: 'sine', freqFinal: 42, reverb: 0.5 })
       // Bomba da escopeta, 130 ms depois: dois cliques metalicos.
@@ -257,15 +302,13 @@ export class Sfx {
       this.camadaRuido({ duracao: 0.11, ganho: 0.35 * v, tipo: 'bandpass', freq: 2400, freqFinal: 900, q: 0.9, reverb: 0.6 })
       // Estalo dominante: e o que separa rifle de escopeta ao ouvido.
       this.camadaRuido({ duracao: 0.045, ganho: 0.44 * v, tipo: 'highpass', freq: 3800, freqFinal: 9000, reverb: 0.35 })
+      // Borda seca: mesma logica da escopeta, ganho igual ao estalo molhado.
+      this.camadaRuido({ duracao: 0.010, ganho: 0.16 * v, tipo: 'highpass', freq: 3200, seco: true })
       this.tom({ freq: 190, duracao: 0.09, ganho: 0.18 * v, tipo: 'sine', freqFinal: 70, reverb: 0.4 })
       // Ferrolho voltando, bem mais rapido que a bomba da escopeta.
       this.camadaRuido({ duracao: 0.03, ganho: 0.05, tipo: 'bandpass', freq: 3200, q: 4, atraso: 0.055 })
       return
     }
-
-    this.camadaRuido({ duracao: 0.12, ganho: 0.6 * v, tipo: 'lowpass', freq: 1800, freqFinal: 240, reverb: 0.6 })
-    this.camadaRuido({ duracao: 0.04, ganho: 0.45 * v, tipo: 'highpass', freq: 3000, freqFinal: 7000, reverb: 0.3 })
-    this.tom({ freq: 240, duracao: 0.06, ganho: 0.22 * v, tipo: 'sine', freqFinal: 90 })
   }
 
   /**
@@ -294,9 +337,53 @@ export class Sfx {
       duracao: 0.16, ganho: 0.5 * perto, tipo: 'lowpass',
       freq: brilho, freqFinal: 160, reverb: 0.9, pan,
     })
+    // perto ao quadrado e proposital: a absorcao do ar ja entra em `brilho`
+    // (banda), e reforca-la tambem no ganho da banda aguda deixa a distancia
+    // mais legivel ao ouvido do que modelar so uma vez.
     this.camadaRuido({
       duracao: 0.05, ganho: 0.3 * perto * perto, tipo: 'highpass',
       freq: 2600, freqFinal: 5200, reverb: 0.4, pan,
+    })
+  }
+
+  /**
+   * Passo do jogador: ruido curtissimo e baixo, so para dar presenca ao
+   * andar sem competir com o resto da mixagem.
+   *
+   * Reusa `this.ruido` via `camadaRuido` (que ja le um trecho aleatorio do
+   * buffer) — zero alocacao nova por passo. A pequena variacao de frequencia
+   * entre chamadas evita o "clique metronomico" de repetir o mesmo som.
+   */
+  playerStep(): void {
+    const variacao = 0.85 + Math.random() * 0.3
+    this.camadaRuido({
+      duracao: 0.04 + Math.random() * 0.02,
+      ganho: 0.05 + Math.random() * 0.03,
+      tipo: 'lowpass',
+      freq: 650 * variacao,
+      freqFinal: 140,
+    })
+  }
+
+  /**
+   * Passo de um inimigo, posicionado no estereo como o tiro dele.
+   *
+   * @param pan mesmo calculo do `enemyShot`: seno do angulo relativo.
+   * @param perto mesma escala 0..1 de proximidade do `enemyShot`.
+   *
+   * Retorna cedo abaixo de 0,35: com ate 14 inimigos em cena, tocar passo de
+   * quem esta longe vira cacofonia sem acrescentar leitura nenhuma.
+   */
+  enemyStep(pan: number, perto: number): void {
+    if (perto < 0.35) return
+    const variacao = 0.85 + Math.random() * 0.3
+    this.camadaRuido({
+      duracao: 0.035 + Math.random() * 0.015,
+      ganho: (0.018 + Math.random() * 0.012) * perto,
+      tipo: 'lowpass',
+      freq: 550 * variacao,
+      freqFinal: 130,
+      pan,
     })
   }
 
@@ -320,6 +407,16 @@ export class Sfx {
   playerHurt(): void {
     this.tom({ freq: 88, duracao: 0.22, ganho: 0.42, tipo: 'triangle', freqFinal: 52 })
     this.camadaRuido({ duracao: 0.1, ganho: 0.2, tipo: 'lowpass', freq: 700, freqFinal: 200 })
+  }
+
+  /**
+   * Morte do jogador: impacto grave e curto seguido de tom descendente
+   * rapido. Diferente de `playerHurt` (que e reversivel e repete a cada
+   * dano) — este toca uma vez so, e precisa soar definitivo.
+   */
+  playerDeath(): void {
+    this.camadaRuido({ duracao: 0.14, ganho: 0.5, tipo: 'lowpass', freq: 500, freqFinal: 70 })
+    this.tom({ freq: 160, duracao: 0.32, ganho: 0.4, tipo: 'sawtooth', freqFinal: 28, reverb: 0.35 })
   }
 
   /** Troca de arma: dois cliques mecanicos. */

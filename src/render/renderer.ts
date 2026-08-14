@@ -21,13 +21,16 @@ import {
   BoxGeometry,
   BufferAttribute,
   BufferGeometry,
+  CanvasTexture,
   Color,
   DirectionalLight,
+  DoubleSide,
   Fog,
   HemisphereLight,
   LineBasicMaterial,
   LineSegments,
   Mesh,
+  MeshBasicMaterial,
   MeshStandardMaterial,
   PCFSoftShadowMap,
   PerspectiveCamera,
@@ -51,6 +54,7 @@ import {
   createFloorSurface,
   createWallSurface,
   surfaceMaterial,
+  type SurfaceMaps,
 } from './materials'
 import { ParticleSystem } from './particles'
 import { QUALITY_PRESETS, QualityGovernor, type QualityLevel, type QualitySettings } from './quality'
@@ -58,6 +62,12 @@ import { ViewModel } from './viewmodel'
 
 /** Quantos rastros de tiro cabem na tela ao mesmo tempo. */
 const MAX_TRACES = 32
+
+/** Quantos decais de impacto cabem na arena ao mesmo tempo. */
+const MAX_DECALS = 12
+
+/** Quanto tempo um decal de impacto fica visivel antes de sumir, em ms. */
+const DECAL_VIDA_MS = 8000
 
 const COR_NEBLINA = 0x2a2620
 
@@ -70,11 +80,15 @@ export class Renderer {
   private readonly composer: EffectComposer
   private readonly bloom: UnrealBloomPass
   private readonly playerLight: PointLight
+  private readonly muzzleLight: PointLight
   private readonly sun: DirectionalLight
   private readonly governor: QualityGovernor
 
   private recoil = 0
   private flashTimer = 0
+
+  private readonly decalPool: Array<{ mesh: Mesh; material: MeshBasicMaterial; vidaMs: number }> = []
+  private proximoDecal = 0
 
   private readonly traceLines: LineSegments
   private readonly tracePositions = new Float32Array(MAX_TRACES * 6)
@@ -111,7 +125,12 @@ export class Renderer {
     this.camera.rotation.order = 'YXZ'
     this.camera.position.set(arena.playerStart.x, VIEW_HEIGHT, arena.playerStart.z)
 
-    this.scene.fog = new Fog(COR_NEBLINA, arena.size * 1.1, arena.size * 2.6)
+    // Near a 35% do lado da arena, far a 105%. A visada mais longa possivel e
+    // a diagonal da sala fechada, arena.size * raiz(2) — com arena.size=2048
+    // isso da uns 2896 unidades. O far anterior (size*1.1 = 2252) ficava
+    // AQUEM dessa diagonal, entao nenhum ponto visivel da arena chegava perto
+    // dele: a neblina nunca tinha efeito visual, so existia no codigo.
+    this.scene.fog = new Fog(COR_NEBLINA, arena.size * 0.35, arena.size * 1.05)
 
     this.sun = this.buildLights(arena)
     this.buildArena(arena)
@@ -121,9 +140,17 @@ export class Renderer {
     this.playerLight = new PointLight(0xfffaf2, 1.15, 1500, 1.1)
     this.scene.add(this.playerLight)
 
+    // Luz do clarao do tiro: curto alcance e decai rapido, so para o trecho
+    // de parede/chao mais proximo reagir ao disparo. Intensidade contida de
+    // proposito — o limiar do bloom e 0.92, e um pulso forte aqui estouraria
+    // o metal da arma no viewmodel junto.
+    this.muzzleLight = new PointLight(0xffb060, 0, 340, 2)
+    this.scene.add(this.muzzleLight)
+
     this.traceLines = this.buildTraces(0xffe0a0, this.tracePositions)
     this.enemyTraceLines = this.buildTraces(0xff5a3c, this.enemyTracePositions)
     this.particles = new ParticleSystem(this.scene)
+    this.buildDecals()
 
     this.composer = new EffectComposer(this.renderer)
     this.composer.addPass(new RenderPass(this.scene, this.camera))
@@ -229,8 +256,19 @@ export class Renderer {
     this.scene.add(sala)
 
     // Os obstaculos usam a mesma escala de bloco das paredes, senao pilar e
-    // parede parecem feitos de materiais de tamanhos diferentes.
-    const materialObstaculo = surfaceMaterial(createWallSurface(), 256 / escalaBloco, {
+    // parede parecem feitos de materiais de tamanhos diferentes. Antes disso
+    // gerava a textura de parede DE NOVO so por causa da repeticao diferente
+    // — rodava o gerador de ruido e o normal map pela segunda vez para um
+    // resultado identico. clone() da uma textura com repeat proprio sem
+    // regerar um pixel: mesma imagem, wrapping independente.
+    const paredeMapsObstaculo: SurfaceMaps = {
+      map: paredeMaps.map.clone(),
+      normalMap: paredeMaps.normalMap.clone(),
+      roughnessMap: paredeMaps.roughnessMap.clone(),
+    }
+    for (const textura of Object.values(paredeMapsObstaculo)) textura.needsUpdate = true
+
+    const materialObstaculo = surfaceMaterial(paredeMapsObstaculo, 256 / escalaBloco, {
       metalness: 0.1,
       normalScale: 1.2,
     })
@@ -257,6 +295,69 @@ export class Renderer {
     return lines
   }
 
+  /**
+   * Deposito de decais de impacto na parede.
+   *
+   * Mesmo raciocinio do sistema de particulas: um pool fixo, criado uma vez,
+   * reaproveitado em anel. Nenhum tiro aloca malha ou material novo.
+   */
+  private buildDecals(): void {
+    const textura = criarTexturaDecal()
+    const geometry = new PlaneGeometry(24, 24)
+
+    for (let i = 0; i < MAX_DECALS; i++) {
+      const material = new MeshBasicMaterial({
+        map: textura,
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+        side: DoubleSide,
+        // Sem isso o decal, colado na mesma cota da parede, treme (z-fight)
+        // contra a propria parede quando a camera se afasta.
+        polygonOffset: true,
+        polygonOffsetFactor: -4,
+        polygonOffsetUnits: -4,
+      })
+
+      const mesh = new Mesh(geometry, material)
+      mesh.visible = false
+      mesh.frustumCulled = false
+      this.scene.add(mesh)
+      this.decalPool.push({ mesh, material, vidaMs: 0 })
+    }
+  }
+
+  /**
+   * Cola um decal no ponto de impacto.
+   *
+   * @param dirX,dirZ direcao normalizada de volta a origem do tiro — a mesma
+   *   usada para o jato de faisca. Paredes e caixas da arena sao alinhadas
+   *   aos eixos, entao o eixo dominante dessa direcao aproxima bem a normal
+   *   da superficie sem precisar consultar a geometria.
+   */
+  private emitirDecal(x: number, y: number, z: number, dirX: number, dirZ: number): void {
+    const normalX = Math.abs(dirX) >= Math.abs(dirZ) ? Math.sign(dirX) || 1 : 0
+    const normalZ = normalX === 0 ? Math.sign(dirZ) || 1 : 0
+
+    const slot = this.decalPool[this.proximoDecal]!
+    this.proximoDecal = (this.proximoDecal + 1) % this.decalPool.length
+
+    // Afasta um triz da superficie na direcao da normal, para nao brigar com
+    // ela por profundidade, e orienta o plano para encarar essa mesma direcao.
+    // O plano de PlaneGeometry encara +Z por padrao; girar em Y o aponta para
+    // +-X ou mantem/inverte para +-Z, conforme o eixo dominante do impacto.
+    const rotacaoY = normalX !== 0 ? Math.sign(normalX) * (Math.PI / 2) : normalZ > 0 ? 0 : Math.PI
+    const rotacaoRolagem = (Math.random() - 0.5) * 0.6 // variedade, sem desalinhar da parede
+
+    slot.mesh.position.set(x + normalX * 0.6, y, z + normalZ * 0.6)
+    slot.mesh.rotation.set(0, rotacaoY, rotacaoRolagem)
+    slot.mesh.scale.setScalar(0.8 + Math.random() * 0.5)
+
+    slot.mesh.visible = true
+    slot.material.opacity = 0.85
+    slot.vidaMs = DECAL_VIDA_MS
+  }
+
   private aplicarQualidade(settings: QualitySettings): void {
     this.renderer.shadowMap.enabled = settings.shadows
     this.sun.castShadow = settings.shadows
@@ -280,6 +381,12 @@ export class Renderer {
     this.recoil = 1
     this.flashTimer = 1
     this.traceTimer = 1
+
+    // O clarao ate aqui so acendia o viewmodel — o mundo em volta do jogador
+    // nao reagia ao proprio tiro. Reaproveita o mesmo flashTimer que decai em
+    // updateEffects(), so que pulsando luz de verdade na cena em vez de so
+    // trocar emissive na arma; a intensidade e aplicada la, junto do decaimento.
+    this.muzzleLight.position.set(this.camera.position.x, eyeY, this.camera.position.z)
 
     const count = Math.min(traces.length, MAX_TRACES)
     for (let i = 0; i < MAX_TRACES; i++) {
@@ -318,6 +425,15 @@ export class Renderer {
         dirX / comprimento,
         dirZ / comprimento,
       )
+
+      // Decal so quando o tiro NAO acertou inimigo — trace.hit ja e a mesma
+      // distincao que decide faisca vs sangue acima, entao reaproveita.
+      if (!trace.hit) {
+        this.emitirDecal(
+          trace.toX, eyeY - 3, trace.toZ,
+          dirX / comprimento, dirZ / comprimento,
+        )
+      }
     }
 
     // Fumaca na boca do cano, ligeiramente a frente do jogador.
@@ -436,6 +552,12 @@ export class Renderer {
     this.enemyTraceTimer = decay(this.enemyTraceTimer, deltaMs, 260)
     this.particles.update(deltaMs)
 
+    // A luz do clarao segue o mesmo decaimento do flashTimer que ja movia o
+    // brilho do viewmodel — os dois apagam juntos, sem cronometro proprio.
+    this.muzzleLight.intensity = this.flashTimer * 3.2
+
+    this.atualizarDecais(deltaMs)
+
     const traceMaterial = this.traceLines.material as LineBasicMaterial
     traceMaterial.opacity = this.traceTimer * 0.7
     this.traceLines.visible = this.traceTimer > 0.01
@@ -463,6 +585,36 @@ export class Renderer {
       this.inclinacao,
     )
     this.viewModel.clarao(this.flashTimer)
+  }
+
+  /** Some com os decais aos poucos, so no ultimo trecho de vida. */
+  private atualizarDecais(deltaMs: number): void {
+    const FADE_MS = 1500
+
+    for (const slot of this.decalPool) {
+      if (slot.vidaMs <= 0) continue
+
+      slot.vidaMs -= deltaMs
+      if (slot.vidaMs <= 0) {
+        slot.mesh.visible = false
+        slot.material.opacity = 0
+        continue
+      }
+
+      slot.material.opacity = slot.vidaMs < FADE_MS ? (slot.vidaMs / FADE_MS) * 0.85 : 0.85
+    }
+  }
+
+  /**
+   * Restaura o governador de qualidade ao estado inicial da sessao.
+   *
+   * Chamado pelo orquestrador no restart da partida — sem isso, um teto
+   * travado pela anti-oscilacao numa partida anterior (por exemplo, por causa
+   * do engasgo de compilacao de shader logo no primeiro combate) persistiria
+   * para sempre, mesmo que a maquina desse conta de mais qualidade.
+   */
+  resetQualidade(): void {
+    this.governor.reset()
   }
 
   render(): void {
@@ -507,6 +659,54 @@ function decay(value: number, deltaMs: number, halfLifeMs: number): number {
 
 function clamp(v: number, min: number, max: number): number {
   return v < min ? min : v > max ? max : v
+}
+
+/** Textura do decal, gerada uma unica vez e reusada por todo o pool. */
+let texturaDecalCache: CanvasTexture | null = null
+
+/**
+ * Furo de impacto: mancha escura com o centro mais fechado e borda
+ * esfarelada, em vez de um circulo perfeito — chumbo nao faz buraco redondo.
+ */
+function criarTexturaDecal(): CanvasTexture {
+  if (texturaDecalCache) return texturaDecalCache
+
+  const size = 64
+  const canvas = document.createElement('canvas')
+  canvas.width = size
+  canvas.height = size
+  const ctx = canvas.getContext('2d')
+  if (!ctx) throw new Error('Canvas 2D indisponivel neste navegador')
+
+  const centro = size / 2
+  const gradiente = ctx.createRadialGradient(centro, centro, 1, centro, centro, centro * 0.85)
+  gradiente.addColorStop(0, 'rgba(8,7,6,0.88)')
+  gradiente.addColorStop(0.5, 'rgba(20,17,14,0.55)')
+  gradiente.addColorStop(1, 'rgba(20,17,14,0)')
+  ctx.fillStyle = gradiente
+  ctx.beginPath()
+  ctx.arc(centro, centro, centro * 0.85, 0, Math.PI * 2)
+  ctx.fill()
+
+  // Borda irregular: respingos pequenos ao redor do furo principal, com
+  // semente fixa para o resultado ser sempre o mesmo.
+  let seed = 0xdeca1
+  const random = () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0
+    return seed / 0x100000000
+  }
+  for (let i = 0; i < 14; i++) {
+    const angulo = random() * Math.PI * 2
+    const distancia = centro * (0.55 + random() * 0.4)
+    const raio = 1.5 + random() * 4
+    ctx.fillStyle = `rgba(15,12,10,${0.25 + random() * 0.35})`
+    ctx.beginPath()
+    ctx.arc(centro + Math.cos(angulo) * distancia, centro + Math.sin(angulo) * distancia, raio, 0, Math.PI * 2)
+    ctx.fill()
+  }
+
+  texturaDecalCache = new CanvasTexture(canvas)
+  return texturaDecalCache
 }
 
 export { Color }

@@ -126,6 +126,16 @@ export class Game {
   /** Ultimo golpe recebido. Alimenta a tela de fim de jogo. */
   lastDamage: DeathCause | null = null
 
+  /**
+   * Uma arma nao se esquece do proprio cooldown so por ficar guardada.
+   *
+   * Antes, trocar de arma recriava o WeaponState do zero: sacar a escopeta de
+   * volta apos um round-trip rapido devolvia o cooldown a zero, driblando o
+   * cycleTics de 44 tics. Cada arma mantem seu estado aqui, criado na primeira
+   * vez que e equipada; `weapon` so muda a referencia.
+   */
+  private readonly weapons = new Map<LoadoutId, WeaponState>()
+
   private queue: EnemyKind[] = []
   private spawnCooldown = 0
   private phaseTics = INTERMISSION_TICS
@@ -135,8 +145,31 @@ export class Game {
   constructor(seed = 0x1d1a) {
     this.arena = createArena()
     this.player = createPlayer(this.arena.playerStart)
-    this.weapon = createWeapon('shotgun')
+    this.weapon = this.weaponFor('shotgun')
     this.random = createRandom(seed)
+  }
+
+  /** Devolve o estado da arma, criando-o na primeira vez que e equipada. */
+  private weaponFor(id: LoadoutId): WeaponState {
+    let weapon = this.weapons.get(id)
+    if (!weapon) {
+      weapon = createWeapon(id)
+      this.weapons.set(id, weapon)
+    }
+    return weapon
+  }
+
+  /**
+   * O tempo passa para toda arma guardada, nao so para a equipada.
+   *
+   * So a arma ativa roda o `tickWeapon` completo (fuse e disparo); as outras
+   * so contam os tics de recarga, ate zerar.
+   */
+  private advanceStowedWeapons(): void {
+    for (const weapon of this.weapons.values()) {
+      if (weapon === this.weapon) continue
+      if (weapon.cooldownTics > 0) weapon.cooldownTics--
+    }
   }
 
   get aliveEnemies(): number {
@@ -156,15 +189,16 @@ export class Game {
     }
 
     // Troca e mira antes do movimento: a mira pesa o passo neste mesmo tic.
-    if (command.switchTo) requestSwap(this.aim, command.switchTo)
-    else if (command.cycleWeapon) requestNextWeapon(this.aim)
+    if (command.switchTo) requestSwap(this.aim, command.switchTo, this.weapon)
+    else if (command.cycleWeapon) requestNextWeapon(this.aim, this.weapon)
 
     const armaAntes = this.aim.current
     tickAim(this.aim, command.aim)
     if (this.aim.current !== armaAntes) {
-      this.weapon = createWeapon(this.aim.current)
+      this.weapon = this.weaponFor(this.aim.current)
       events.weaponSwapped = this.aim.current
     }
+    this.advanceStowedWeapons()
 
     // Apontar reduz a velocidade. E a unica concessao ao modelo moderno de
     // locomocao: a base continua a do DOOM, rapida e sem inercia falsa.
@@ -314,10 +348,23 @@ export class Game {
   }
 
   private advanceEnemies(events: GameEvents): void {
+    // Congela x/z de todos os inimigos no inicio do tic. Sem isso, `others` e
+    // o array vivo: quem e processado depois neste mesmo `for` ve posicoes ja
+    // mutadas por quem foi processado antes, e a separacao passa a depender
+    // da ordem do array em vez so das posicoes. As mutacoes de verdade
+    // continuam acontecendo nos objetos de `this.enemies`.
+    const snapshot = this.enemies.map((enemy) => ({
+      id: enemy.id,
+      x: enemy.x,
+      z: enemy.z,
+      radius: enemy.radius,
+      alive: enemy.alive,
+    }))
+
     const context = {
       player: { x: this.player.x, z: this.player.z },
       walls: this.arena.walls,
-      others: this.enemies,
+      others: snapshot,
       random: this.random,
     }
 
@@ -325,24 +372,38 @@ export class Game {
       const attack = tickEnemy(enemy, context)
       if (!attack) continue
 
-      this.player.health -= attack.damage
-      events.damageTaken += attack.damage
+      if (attack.hit) {
+        this.player.health -= attack.damage
+        events.damageTaken += attack.damage
+      }
 
       const distance = Math.hypot(enemy.x - this.player.x, enemy.z - this.player.z)
       const melee = BEHAVIOUR[enemy.kind].attackRange < 200
+
+      // Erro passa visivelmente ao lado: o traco desviado e a informacao de
+      // que atiraram em voce, sem o dano — a dispersao do DOOM em forma legivel.
+      let desvioX = 0
+      let desvioZ = 0
+      if (!attack.hit) {
+        const comprimento = distance || 1
+        const lado = this.random.int(2) === 0 ? 1 : -1
+        const desvio = lado * (28 + this.random.int(24))
+        desvioX = (-(this.player.z - enemy.z) / comprimento) * desvio
+        desvioZ = ((this.player.x - enemy.x) / comprimento) * desvio
+      }
 
       events.enemyShots.push({
         enemyId: enemy.id,
         kind: enemy.kind,
         fromX: enemy.x,
         fromZ: enemy.z,
-        toX: this.player.x,
-        toZ: this.player.z,
-        damage: attack.damage,
+        toX: this.player.x + desvioX,
+        toZ: this.player.z + desvioZ,
+        damage: attack.hit ? attack.damage : 0,
         melee,
       })
 
-      this.lastDamage = { kind: enemy.kind, distance, melee }
+      if (attack.hit) this.lastDamage = { kind: enemy.kind, distance, melee }
     }
   }
 

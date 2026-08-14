@@ -17,11 +17,12 @@ import {
 } from './core/doom'
 import { currentWeapon, swapProgress } from './weapons/aiming'
 import { LOADOUT, effectiveFov } from './weapons/loadout'
+import { resetEnemyIds } from './enemies/enemy'
 import { Input } from './core/input'
 import { FixedTimestepLoop } from './core/loop'
 import { Game } from './game'
 import { Hud } from './hud'
-import { shouldShowMenu } from './menu'
+import { wirePointerLockOverlay } from './menu'
 import { EnemyRenderer } from './render/enemyView'
 import { Renderer } from './render/renderer'
 
@@ -64,9 +65,20 @@ const input = new Input(canvas, { allowUnlocked: measurementMode })
 const renderer = new Renderer(canvas, game.arena)
 const enemyRenderer = new EnemyRenderer(renderer.scene)
 const sfx = new Sfx()
+// O navegador pode suspender o contexto de audio fora do fluxo de clique
+// (aba em segundo plano); sem isto o jogo ficaria mudo pelo resto da sessao.
+sfx.instalarAutoResume()
 
 /** Estado do tic anterior, para interpolar o desenho. */
 const previous = { x: game.player.x, z: game.player.z, eye: game.eyeY }
+
+/** ~3,6 passos/s a 583 u/s de corrida (TERMINAL_SPEED a 35 tics). */
+const PASSO_STRIDE = 160
+let passoAcumulado = 0
+
+/** Igual ao STRIDE de render/enemyView.ts (62) — mantenha os dois em sincronia. */
+const PASSO_STRIDE_INIMIGO = 62
+const passosInimigo = new Map<number, number>()
 
 /** Giro do mouse do ultimo tic, que o desenho usa para o atraso da arma. */
 const giroSuavizado = { x: 0, y: 0 }
@@ -131,6 +143,13 @@ const loop = new FixedTimestepLoop({
     const command = input.consume()
     const events = game.tick(command)
 
+    // `previous` ainda guarda a posicao pre-tic neste ponto.
+    passoAcumulado += Math.hypot(game.player.x - previous.x, game.player.z - previous.z)
+    if (passoAcumulado >= PASSO_STRIDE) {
+      passoAcumulado %= PASSO_STRIDE
+      sfx.playerStep()
+    }
+
     if (events.fired) {
       renderer.onFire(events.traces, game.eyeY)
       sfx.shot(events.weaponFired === 'rifle' ? 'rifle' : 'shotgun')
@@ -147,10 +166,13 @@ const loop = new FixedTimestepLoop({
       renderer.onEnemyFire(events.enemyShots, game.eyeY)
 
       // Aponta para o golpe mais forte do tic. Varios avisos simultaneos
-      // competindo pela mesma borda da tela nao informam nada.
-      const pior = events.enemyShots.reduce((a, b) => (b.damage > a.damage ? b : a))
-      const angulo = anguloRelativo(pior.fromX, pior.fromZ)
-      hud.showDamageDirection(angulo)
+      // competindo pela mesma borda da tela nao informam nada. Tiro que errou
+      // (damage 0) nao acende o aviso vermelho — o traco e o som ja informam.
+      const acertos = events.enemyShots.filter((tiro) => tiro.damage > 0)
+      if (acertos.length > 0) {
+        const pior = acertos.reduce((a, b) => (b.damage > a.damage ? b : a))
+        hud.showDamageDirection(anguloRelativo(pior.fromX, pior.fromZ))
+      }
 
       // O mesmo aviso pelo ouvido, que costuma chegar antes do olho: o disparo
       // toca no lado de onde veio, abafado conforme a distancia.
@@ -161,6 +183,21 @@ const loop = new FixedTimestepLoop({
           tiro.fromZ - game.player.z,
         )
         sfx.enemyShot(anguloRelativo(tiro.fromX, tiro.fromZ), distancia)
+      }
+    }
+
+    // Passos dos inimigos, no mesmo compasso da animacao das pernas: um som a
+    // cada STRIDE percorrido, panorizado e atenuado como o tiro inimigo.
+    for (const enemy of game.enemies) {
+      if (!enemy.alive) continue
+      const passos = Math.floor(enemy.distanceWalked / PASSO_STRIDE_INIMIGO)
+      const anterior = passosInimigo.get(enemy.id) ?? 0
+      if (passos > anterior) {
+        passosInimigo.set(enemy.id, passos)
+        const distancia = Math.hypot(enemy.x - game.player.x, enemy.z - game.player.z)
+        const perto = Math.max(0.22, Math.min(1, 900 / Math.max(120, distancia)))
+        const pan = Math.max(-1, Math.min(1, Math.sin(anguloRelativo(enemy.x, enemy.z))))
+        sfx.enemyStep(pan, perto)
       }
     }
 
@@ -321,6 +358,8 @@ function endGame(): void {
   deathCause.textContent = descreverMorte()
   gameOverScreen.hidden = false
   hud.hide()
+  // O golpe final soa distinto do dano comum, antes do jingle de encerramento.
+  sfx.playerDeath()
   sfx.gameOver()
   if (document.pointerLockElement) document.exitPointerLock()
 }
@@ -333,8 +372,12 @@ function restart(): void {
   latency.worstMs = 0
   latency.lastMs = 0
   fps.worst = Infinity
+  renderer.resetQualidade()
   hud.reset()
   enemyRenderer.sync([])
+  resetEnemyIds()
+  passoAcumulado = 0
+  passosInimigo.clear()
   previous.x = game.player.x
   previous.z = game.player.z
   previous.eye = game.eyeY
@@ -344,40 +387,19 @@ function restart(): void {
 startButton.addEventListener('click', beginPlaying)
 restartButton.addEventListener('click', restart)
 
-/**
- * Perder o ponteiro traz o menu de volta, em vez de deixar o jogador mexendo
- * o mouse sem efeito e sem entender por que.
- *
- * Consulta o DOM em vez de perguntar ao Input. A versao anterior lia
- * `input.isLocked`, e este ouvinte estava registrado ANTES do ouvinte do
- * proprio Input — entao, no instante em que o navegador concedia o ponteiro,
- * este rodava primeiro, ainda via `false` e reexibia o menu. Como o menu tem
- * fundo quase opaco, o jogo comecava atras de uma tela escura com os botoes
- * por cima. Depender de ordem de registro entre ouvintes do mesmo evento e
- * fragil; perguntar ao DOM nao tem essa armadilha.
- */
-document.addEventListener('pointerlockchange', () => {
-  const mostrar = shouldShowMenu({
-    pointerLocked: document.pointerLockElement === canvas,
-    phase: game.phase,
-    measurementMode,
-  })
-
-  if (!mostrar) return
-  overlay.hidden = false
-  hud.hide()
-})
-
-/**
- * O navegador pode recusar o ponteiro — foco perdido, pedido logo apos uma
- * saida, politica da pagina. Sem tratar, o jogador clicava em "jogar" e nada
- * acontecia, sem explicacao na tela.
- */
-document.addEventListener('pointerlockerror', () => {
-  overlay.hidden = false
-  hud.hide()
-  hud.toast('clique na tela para capturar o mouse', 2500)
-})
+// Perder o ponteiro traz o menu de volta. A decisao e o historico do bug de
+// ordem de ouvintes vivem em menu.ts, onde ha teste de regressao com DOM falso.
+// `estado` e funcao porque `game` e reatribuido no restart.
+wirePointerLockOverlay(
+  document,
+  {
+    overlay,
+    lockTarget: canvas,
+    hideHud: () => hud.hide(),
+    toast: (message, durationMs) => hud.toast(message, durationMs),
+  },
+  () => ({ phase: game.phase, measurementMode }),
+)
 
 input.attach()
 loop.start()
@@ -409,7 +431,7 @@ Object.assign(window, {
      * que decai por mais de um segundo e energia espalhada por toda a banda.
      * Se qualquer um desses numeros estiver errado, o som e outra coisa.
      */
-    medirTiro: async (kind: 'shotgun' | 'rifle' | 'pistol' = 'shotgun') => {
+    medirTiro: async (kind: 'shotgun' | 'rifle' = 'shotgun') => {
       const taxa = 48000
       const segundos = 3
       const offline = new OfflineAudioContext(2, taxa * segundos, taxa)

@@ -410,15 +410,21 @@ describe('D5 legibilidade de combate', () => {
   it('nunca faz um inimigo nascer perto o bastante para surpreender', () => {
     resetEnemyIds()
     const game = new Game(5)
+    // Sem isto, ninguem com vida cheia aparecer durante a corrida faria o
+    // teste passar sem checar distancia nenhuma vez.
+    let verificacoes = 0
 
     for (let i = 0; i < TICRATE * 30; i++) {
       game.tick(command())
       for (const inimigo of game.enemies) {
         if (inimigo.health !== inimigo.maxHealth) continue
+        verificacoes++
         const distancia = Math.hypot(inimigo.x - game.player.x, inimigo.z - game.player.z)
         expect(distancia).toBeGreaterThan(200)
       }
     }
+
+    expect(verificacoes).toBeGreaterThan(0)
   })
 
   it('nao deixa inimigos se sobreporem a ponto de virarem um vulto so', () => {

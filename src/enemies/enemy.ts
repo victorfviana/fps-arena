@@ -67,14 +67,24 @@ export const BEHAVIOUR = {
     /** Atira de longe. */
     attackRange: 900,
     damage: 3,
-    attackCooldownTics: 28,
+    // 1,43 s entre tiros. Os 28 tics originais davam o dobro da cadencia do
+    // POSS do DOOM e, com pontaria perfeita, matavam o jogador parado em
+    // ~17 s — fora da janela de 30-90 s do design. Calibrado por varredura
+    // de sementes junto com a curva de acerto abaixo.
+    attackCooldownTics: 50,
     /** Distancia em que para de se aproximar. */
     preferredRange: 400,
+    /** Chance de acerto a queima-roupa e quanto ela cai ate o attackRange. */
+    acertoBase: 0.75,
+    acertoQueda: 0.6,
   },
   imp: {
     attackRange: 150,
-    damage: 7,
-    attackCooldownTics: 20,
+    // Calibrado pela janela de sobrevivencia parado, junto com a cadencia do
+    // zombieman: com 7 de dano a cada 20 tics, dois imps encostados matavam
+    // em ~8 s e nenhuma dispersao de zombieman compensava.
+    damage: 4,
+    attackCooldownTics: 32,
     // Perto, mas nao encostado. Colado, o modelo dele tomava metade da tela e
     // o jogador perdia de vista o resto da onda — que e justamente o momento
     // em que precisa ver o resto da onda.
@@ -116,12 +126,48 @@ export function resetEnemyIds(): void {
 export interface EnemyAttack {
   enemyId: number
   damage: number
+  /** false = o disparo saiu, mas passou ao lado: o traco existe, o dano nao. */
+  hit: boolean
+}
+
+/**
+ * DERIVADO do DOOM: o tiro do zombieman usa P_GunShot com accurate=false
+ * (dispersao de ate ~11 graus), entao a maioria erra a media distancia — e a
+ * primeira versao daqui, com pontaria perfeita, matava o jogador parado em
+ * ~17 s, fora da janela de 30-90 s do design. A dispersao vira chance de
+ * acerto decrescente com a distancia; corpo a corpo, como no DOOM, nao erra.
+ */
+function rollHit(
+  behaviour: (typeof BEHAVIOUR)[EnemyKind],
+  distance: number,
+  random: Random,
+): boolean {
+  if (!('acertoBase' in behaviour)) return true
+  const chance = Math.max(
+    0.15,
+    behaviour.acertoBase - (behaviour.acertoQueda * distance) / behaviour.attackRange,
+  )
+  return random.float() < chance
+}
+
+/**
+ * Posicoes de outros inimigos, congeladas no inicio do tic.
+ *
+ * So x/z importam para a separacao; o resto do Enemy (estado, vida, yaw...)
+ * nao participa da conta e nao precisaria estar aqui.
+ */
+export interface EnemyPositionSnapshot {
+  id: number
+  x: number
+  z: number
+  radius: number
+  alive: boolean
 }
 
 export interface EnemyTickContext {
   player: Vec2
   walls: readonly Wall[]
-  others: readonly Enemy[]
+  others: readonly EnemyPositionSnapshot[]
   random: Random
 }
 
@@ -166,7 +212,11 @@ export function tickEnemy(enemy: Enemy, context: EnemyTickContext): EnemyAttack 
     // 28 ms e o jogador nao chega a ver quem disparou nele.
     enemy.stateTics = ATTACK_POSE_TICS
     enemy.attackCooldown = behaviour.attackCooldownTics
-    return { enemyId: enemy.id, damage: behaviour.damage }
+    return {
+      enemyId: enemy.id,
+      damage: behaviour.damage,
+      hit: rollHit(behaviour, distance, context.random),
+    }
   }
 
   // Segura a pose de ataque enquanto ela durar, mesmo ja em recarga.
@@ -265,7 +315,7 @@ function advance(
  * Sem isso todos convergem para o mesmo ponto e viram um unico bloco: a onda
  * perde a leitura, e o jogador nao consegue estimar quantos estao vindo.
  */
-function computeSeparation(enemy: Enemy, others: readonly Enemy[]): Vec2 {
+function computeSeparation(enemy: Enemy, others: readonly EnemyPositionSnapshot[]): Vec2 {
   let pushX = 0
   let pushZ = 0
 

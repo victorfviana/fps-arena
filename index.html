@@ -145,6 +145,21 @@
       }
       #wave-banner .value { font-size: 1.3rem; }
 
+      /* Vinheta permanente e sutil: escurece as bordas para o olho assentar
+         no centro da tela, onde esta o combate. Nao reage a nada — e so
+         moldura, diferente do #damage-flash logo abaixo, que pisca com dano.
+         Sem position/z-index proprios: e o primeiro filho de #hud (que ja e
+         fixed, inset 0), entao so precisa ficar por baixo dos outros na
+         ordem do DOM. */
+      #vignette {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background: radial-gradient(ellipse at center,
+          rgba(0, 0, 0, 0) 55%, rgba(0, 0, 0, 0.55) 100%);
+        opacity: 0.35;
+      }
+
       /* Vinheta que pisca ao levar dano — periferica de proposito, para
          avisar sem tapar o centro da tela. */
       #damage-flash {
@@ -255,6 +270,7 @@
     <canvas id="canvas"></canvas>
 
     <div id="hud" hidden>
+      <div id="vignette"></div>
       <div id="damage-flash"></div>
 
       <div id="damage-arc">

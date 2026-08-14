@@ -18,17 +18,20 @@
 
 import {
   BoxGeometry,
+  CanvasTexture,
   CapsuleGeometry,
+  CircleGeometry,
   Color,
   ConeGeometry,
   Group,
   Mesh,
+  MeshBasicMaterial,
   MeshStandardMaterial,
   Scene,
   SphereGeometry,
 } from 'three'
 
-import type { Enemy, EnemyKind } from '../enemies/enemy'
+import type { Enemy, EnemyKind, EnemyState } from '../enemies/enemy'
 import { ENEMIES } from '../core/doom'
 
 /** Paleta por tipo. Matizes distantes para o olho separar sem pensar. */
@@ -61,6 +64,15 @@ interface EnemyView {
   materials: MeshStandardMaterial[]
   baseColors: Color[]
   kind: EnemyKind
+  /**
+   * Blob shadow no chao, independente do grupo — assim ela nao inclina junto
+   * com o corpo na animacao de morte e continua lendo como "sombra no piso".
+   */
+  shadowMesh: Mesh
+  /** Ultimo health e state aplicados, para aplicarCor() so recolorir quando
+   *  algo de fato mudou (ver aplicarCor). */
+  lastHealth: number
+  lastState: EnemyState | null
 }
 
 export class EnemyRenderer {
@@ -96,6 +108,11 @@ export class EnemyRenderer {
     const stats = ENEMIES[enemy.kind]
     view.group.position.set(enemy.x, 0, enemy.z)
     view.group.rotation.y = enemy.yaw
+
+    // Chao, e nao no grupo: a sombra nao deve inclinar quando o corpo tomba
+    // na morte, senao ela sai do chao e flutua junto com o cadaver.
+    view.shadowMesh.position.x = enemy.x
+    view.shadowMesh.position.z = enemy.z
 
     if (enemy.state === 'dying') {
       this.animarMorte(view, enemy, stats.deathTics)
@@ -180,7 +197,18 @@ export class EnemyRenderer {
     view.torso.position.y = stats.height * 0.42
   }
 
+  /**
+   * Recolore o corpo conforme vida e estado de dor.
+   *
+   * So refaz o trabalho quando health ou state mudaram desde o quadro
+   * anterior — antes rodava para os tres materiais de cada inimigo vivo, todo
+   * quadro, mesmo parado e sem levar tiro nenhum.
+   */
   private aplicarCor(view: EnemyView, enemy: Enemy): void {
+    if (view.lastHealth === enemy.health && view.lastState === enemy.state) return
+    view.lastHealth = enemy.health
+    view.lastState = enemy.state
+
     const ferido = 1 - enemy.health / enemy.maxHealth
     const emDor = enemy.state === 'pain'
 
@@ -197,6 +225,13 @@ export class EnemyRenderer {
       const reused = this.pool.splice(indice, 1)[0]!
       reused.group.visible = true
       this.scene.add(reused.group)
+      reused.shadowMesh.visible = true
+      this.scene.add(reused.shadowMesh)
+      // O inimigo reaproveitado e outro individuo, com outro health: sem
+      // isso, aplicarCor() compararia contra o estado do inimigo anterior e
+      // poderia deixar de recolorir no primeiro quadro em que precisava.
+      reused.lastHealth = -1
+      reused.lastState = null
       return reused
     }
     return this.build(kind)
@@ -272,6 +307,14 @@ export class EnemyRenderer {
 
     this.scene.add(group)
 
+    // Blob shadow: no nivel de qualidade baixo a sombra direcional desliga
+    // (ver quality.ts), e sem nenhuma marca no chao o inimigo parece flutuar.
+    // Independente do grupo de proposito — ver comentario no tipo EnemyView.
+    const shadowMesh = new Mesh(new CircleGeometry(stats.radius * 1.15, 20), materialSombra())
+    shadowMesh.rotation.x = -Math.PI / 2
+    shadowMesh.position.y = 0.5 // acima do chao o bastante para nao dar z-fight
+    this.scene.add(shadowMesh)
+
     return {
       group,
       torso,
@@ -283,6 +326,9 @@ export class EnemyRenderer {
       materials: [materialCorpo, materialCabeca, materialMembro],
       baseColors: [new Color(palette.body), new Color(palette.head), new Color(palette.limb)],
       kind,
+      shadowMesh,
+      lastHealth: -1,
+      lastState: null,
     }
   }
 
@@ -313,7 +359,52 @@ export class EnemyRenderer {
   private release(id: number, view: EnemyView): void {
     this.scene.remove(view.group)
     view.group.visible = false
+    this.scene.remove(view.shadowMesh)
+    view.shadowMesh.visible = false
     this.views.delete(id)
     this.pool.push(view)
   }
+}
+
+/** Textura da blob shadow, gerada uma unica vez e reusada por todo inimigo. */
+let sombraTexturaCache: CanvasTexture | null = null
+
+function texturaSombra(): CanvasTexture {
+  if (sombraTexturaCache) return sombraTexturaCache
+
+  const size = 64
+  const canvas = document.createElement('canvas')
+  canvas.width = size
+  canvas.height = size
+  const ctx = canvas.getContext('2d')
+  if (!ctx) throw new Error('Canvas 2D indisponivel neste navegador')
+
+  const centro = size / 2
+  const gradiente = ctx.createRadialGradient(centro, centro, 0, centro, centro, centro)
+  gradiente.addColorStop(0, 'rgba(0,0,0,0.6)')
+  gradiente.addColorStop(0.65, 'rgba(0,0,0,0.32)')
+  gradiente.addColorStop(1, 'rgba(0,0,0,0)')
+  ctx.fillStyle = gradiente
+  ctx.fillRect(0, 0, size, size)
+
+  sombraTexturaCache = new CanvasTexture(canvas)
+  return sombraTexturaCache
+}
+
+/** Material da blob shadow, compartilhado por todo inimigo — nao ha nada
+ *  para variar por instancia, entao um so material serve a todos. */
+let sombraMaterialCache: MeshBasicMaterial | null = null
+
+function materialSombra(): MeshBasicMaterial {
+  if (sombraMaterialCache) return sombraMaterialCache
+
+  sombraMaterialCache = new MeshBasicMaterial({
+    map: texturaSombra(),
+    transparent: true,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
+  })
+  return sombraMaterialCache
 }

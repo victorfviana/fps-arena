@@ -65,7 +65,7 @@ Numeros de referencia atualmente travados:
 ## Estado
 
 Jogavel e publicado. Movimento, arma, inimigos, ondas, HUD e audio prontos,
-com 157 testes cobrindo a simulacao.
+com 205 testes cobrindo a simulacao.
 
 O loop adversarial rodou sobre o nucleo sensorial e parou por nota de corte
 atingida, com media 4,45 na segunda de duas iteracoes. O scorecard esta em
