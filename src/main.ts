@@ -401,6 +401,66 @@ Object.assign(window, {
      * do loop, e a verificacao passa a medir um estado que o jogo real nunca
      * atinge — o rotulo do painel e o modelo na tela ficam para tras.
      */
+    /**
+     * Renderiza um disparo fora do tempo real e mede o sinal.
+     *
+     * "Soa real" nao e verificavel por escuta minha, mas a ESTRUTURA e: um
+     * disparo tem ataque abaixo de um milissegundo, pico logo no inicio, cauda
+     * que decai por mais de um segundo e energia espalhada por toda a banda.
+     * Se qualquer um desses numeros estiver errado, o som e outra coisa.
+     */
+    medirTiro: async (kind: 'shotgun' | 'rifle' | 'pistol' = 'shotgun') => {
+      const taxa = 48000
+      const segundos = 2.2
+      const offline = new OfflineAudioContext(2, taxa * segundos, taxa)
+
+      const aferidor = new Sfx(offline)
+      aferidor.resume()
+      aferidor.shot(kind)
+
+      const rendered = await offline.startRendering()
+      const canal = rendered.getChannelData(0)
+
+      let pico = 0
+      let indicePico = 0
+      for (let i = 0; i < canal.length; i++) {
+        const v = Math.abs(canal[i]!)
+        if (v > pico) { pico = v; indicePico = i }
+      }
+
+      // Tempo ate cair 60 dB abaixo do pico: a duracao percebida da cauda.
+      const limiar = pico * 0.001
+      let ultimoAcimaDoLimiar = 0
+      for (let i = canal.length - 1; i >= 0; i--) {
+        if (Math.abs(canal[i]!) > limiar) { ultimoAcimaDoLimiar = i; break }
+      }
+
+      // Energia por banda, por cruzamentos de zero em janelas curtas: caro
+      // fazer FFT aqui, e a taxa de cruzamento ja separa grave de agudo.
+      const janela = Math.floor(taxa * 0.02)
+      const bandas: number[] = []
+      for (let inicio = 0; inicio + janela < canal.length; inicio += janela) {
+        let cruzamentos = 0
+        let energia = 0
+        for (let i = inicio + 1; i < inicio + janela; i++) {
+          if ((canal[i]! >= 0) !== (canal[i - 1]! >= 0)) cruzamentos++
+          energia += canal[i]! * canal[i]!
+        }
+        if (energia > 1e-6) bandas.push(Math.round((cruzamentos * taxa) / (2 * janela)))
+      }
+
+      return {
+        pico: +pico.toFixed(4),
+        ataqueMs: +((indicePico / taxa) * 1000).toFixed(2),
+        caudaMs: +((ultimoAcimaDoLimiar / taxa) * 1000).toFixed(0),
+        // Frequencia dominante estimada no inicio, no meio e no fim.
+        brilhoInicioHz: bandas[0] ?? 0,
+        brilhoMeioHz: bandas[Math.floor(bandas.length / 2)] ?? 0,
+        brilhoFimHz: bandas[bandas.length - 1] ?? 0,
+        janelasComEnergia: bandas.length,
+      }
+    },
+
     trocarArma: (id: 'shotgun' | 'rifle') => {
       const events = game.tick({
         forward: 0, side: 0, yawDelta: 0, pitchDelta: 0,
