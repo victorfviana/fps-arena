@@ -328,7 +328,7 @@ export class Renderer {
       this.camera.position.x + frenteX * 40,
       eyeY - 6,
       this.camera.position.z + frenteZ * 40,
-      4,
+      2,
       frenteX,
       frenteZ,
     )

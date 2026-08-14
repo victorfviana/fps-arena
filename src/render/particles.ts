@@ -37,11 +37,13 @@ interface Perfil {
 
 const PERFIS: Record<ParticleKind, Perfil> = {
   // Faisca: rapida, quente e curta. Marca o ponto exato do impacto na parede.
-  faisca: { cor: [1.0, 0.78, 0.34], vidaMs: 380, velocidade: 420, gravidade: 1, tamanho: 5, arrasto: 1.6 },
-  // Fumaca: lenta, sobe e dura. Sai do cano depois do disparo.
-  fumaca: { cor: [0.72, 0.72, 0.70], vidaMs: 900, velocidade: 55, gravidade: -0.12, tamanho: 16, arrasto: 2.4 },
+  faisca: { cor: [1.0, 0.78, 0.34], vidaMs: 260, velocidade: 420, gravidade: 1, tamanho: 5, arrasto: 1.6 },
+  // Fumaca: lenta, sobe e some. Vida curta de proposito — a primeira versao
+  // durava quase um segundo e o chao ficava salpicado de bolotas claras que
+  // nao eram nada no jogo, so ruido visual atrapalhando a leitura.
+  fumaca: { cor: [0.55, 0.55, 0.54], vidaMs: 420, velocidade: 48, gravidade: -0.1, tamanho: 11, arrasto: 3.0 },
   // Sangue: escuro e pesado, para separar acerto em inimigo de acerto em parede.
-  sangue: { cor: [0.62, 0.10, 0.10], vidaMs: 520, velocidade: 260, gravidade: 1.4, tamanho: 7, arrasto: 1.2 },
+  sangue: { cor: [0.62, 0.10, 0.10], vidaMs: 380, velocidade: 260, gravidade: 1.4, tamanho: 7, arrasto: 1.2 },
 }
 
 export class ParticleSystem {
@@ -62,7 +64,7 @@ export class ParticleSystem {
     geometry.setAttribute('color', new BufferAttribute(this.cores, 3))
 
     const material = new PointsMaterial({
-      size: 9,
+      size: 6,
       vertexColors: true,
       transparent: true,
       opacity: 0.9,
@@ -170,10 +172,15 @@ export class ParticleSystem {
       this.cores[c + 1] = this.cores[c + 1]! * (0.965 + restante * 0.035)
       this.cores[c + 2] = this.cores[c + 2]! * (0.965 + restante * 0.035)
 
-      // Nao deixa atravessar o chao.
-      if (this.posicoes[p + 1]! < 2) {
-        this.posicoes[p + 1] = 2
-        this.velocidades[p + 1] = Math.abs(this.velocidades[p + 1]!) * 0.28
+      // Ao tocar o chao a particula se apaga depressa, em vez de quicar e
+      // ficar parada ali. Quicando, elas se acumulavam pela arena e o piso
+      // virava um campo de bolotas que nao significavam nada.
+      if (this.posicoes[p + 1]! < 3) {
+        this.posicoes[p + 1] = 3
+        this.velocidades[p] = this.velocidades[p]! * 0.3
+        this.velocidades[p + 1] = 0
+        this.velocidades[p + 2] = this.velocidades[p + 2]! * 0.3
+        this.vida[i] = Math.min(this.vida[i]!, 90)
       }
     }
 
