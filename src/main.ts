@@ -207,14 +207,19 @@ const loop = new FixedTimestepLoop({
       effectiveFov(arma, ads, FOV_HORIZONTAL_DEG),
     )
     enemyRenderer.sync(game.enemies)
-    renderer.render()
 
     // A luneta so entra quando a mira esta quase fechada: aparecer no meio da
     // transicao esconderia o mundo antes de o zoom compensar a perda de visao.
+    //
+    // Decidido ANTES de desenhar. Aplicar depois deixava a arma aparecer
+    // dentro da luneta por um quadro — visivel, porque a luneta abre de uma
+    // vez e o olho pega exatamente esse instante.
     const comLuneta = arma.ads.scoped && ads > 0.72
     scope.classList.toggle('on', comLuneta)
     crosshair.style.opacity = comLuneta || ads > 0.5 ? '0' : '0.85'
     renderer.viewModel.visivel = !comLuneta
+
+    renderer.render()
 
     hud.update({
       health: game.player.health,
