@@ -99,19 +99,27 @@ function construirMao(espelhada = false): Group {
 }
 
 /** Antebraco com manga, ligando a mao a borda da tela. */
+/**
+ * Antebraco que desce para fora do quadro.
+ *
+ * Duas coisas erradas na primeira versao: espesso demais (0,052 de raio, que
+ * na escala da tela virava um tronco) e quase horizontal, entao boiava ao lado
+ * da arma como um objeto solto. Braco em primeira pessoa tem de sair pela
+ * borda inferior — e o angulo, mais que o tamanho, que produz essa leitura.
+ */
 function construirBraco(espelhado = false): Group {
   const braco = new Group()
   const lado = espelhado ? -1 : 1
 
-  const antebraco = new Mesh(new CapsuleGeometry(0.052, 0.30, 4, 10), MATERIAIS.manga)
-  antebraco.position.set(lado * 0.02, -0.02, 0.20)
-  antebraco.rotation.set(Math.PI / 2 - 0.22, 0, lado * 0.12)
+  const antebraco = new Mesh(new CapsuleGeometry(0.034, 0.34, 4, 10), MATERIAIS.manga)
+  antebraco.position.set(lado * 0.035, -0.115, 0.235)
+  antebraco.rotation.set(Math.PI / 2 - 0.62, 0, lado * 0.34)
   braco.add(antebraco)
 
   // Punho aparente entre a manga e a luva.
-  const punho = new Mesh(new CylinderGeometry(0.042, 0.046, 0.05, 10), MATERIAIS.pele)
-  punho.position.set(lado * 0.012, -0.012, 0.055)
-  punho.rotation.set(Math.PI / 2 - 0.22, 0, lado * 0.12)
+  const punho = new Mesh(new CylinderGeometry(0.03, 0.033, 0.045, 10), MATERIAIS.pele)
+  punho.position.set(lado * 0.014, -0.03, 0.052)
+  punho.rotation.set(Math.PI / 2 - 0.62, 0, lado * 0.34)
   braco.add(punho)
 
   return braco
@@ -195,9 +203,9 @@ export function construirEscopeta(): ArmaMontada {
   punho.rotation.x = -0.30
   grupo.add(punho)
 
-  const coronha = new Mesh(new BoxGeometry(0.052, 0.10, 0.26), MATERIAIS.madeira)
-  coronha.position.set(0, -0.035, 0.26)
-  coronha.rotation.x = 0.09
+  const coronha = new Mesh(new BoxGeometry(0.046, 0.082, 0.24), MATERIAIS.madeira)
+  coronha.position.set(0, -0.042, 0.25)
+  coronha.rotation.x = 0.11
   grupo.add(coronha)
 
   const alca = new Mesh(new BoxGeometry(0.008, 0.022, 0.012), MATERIAIS.metalGasto)
