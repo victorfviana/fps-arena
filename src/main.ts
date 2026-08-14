@@ -411,7 +411,7 @@ Object.assign(window, {
      */
     medirTiro: async (kind: 'shotgun' | 'rifle' | 'pistol' = 'shotgun') => {
       const taxa = 48000
-      const segundos = 2.2
+      const segundos = 3
       const offline = new OfflineAudioContext(2, taxa * segundos, taxa)
 
       const aferidor = new Sfx(offline)
@@ -421,19 +421,43 @@ Object.assign(window, {
       const rendered = await offline.startRendering()
       const canal = rendered.getChannelData(0)
 
-      let pico = 0
-      let indicePico = 0
-      for (let i = 0; i < canal.length; i++) {
-        const v = Math.abs(canal[i]!)
-        if (v > pico) { pico = v; indicePico = i }
+      /**
+       * Envelope por RMS em janelas de 1 ms.
+       *
+       * Medir o ataque pela maior AMOSTRA nao funciona em sinal ruidoso: o
+       * valor instantaneo do ruido e aleatorio, e o maior deles cai em
+       * qualquer lugar dentro da envoltoria. A primeira versao deste aferidor
+       * fazia isso e reportou "ataque em 37 ms" para um som cujo envelope sobe
+       * em menos de um milissegundo — quase me levou a corrigir o que nao
+       * estava quebrado.
+       */
+      const janelaRms = Math.floor(taxa * 0.001)
+      const envelope: number[] = []
+      for (let inicio = 0; inicio + janelaRms <= canal.length; inicio += janelaRms) {
+        let soma = 0
+        for (let i = inicio; i < inicio + janelaRms; i++) soma += canal[i]! * canal[i]!
+        envelope.push(Math.sqrt(soma / janelaRms))
       }
 
-      // Tempo ate cair 60 dB abaixo do pico: a duracao percebida da cauda.
-      const limiar = pico * 0.001
-      let ultimoAcimaDoLimiar = 0
-      for (let i = canal.length - 1; i >= 0; i--) {
-        if (Math.abs(canal[i]!) > limiar) { ultimoAcimaDoLimiar = i; break }
+      let pico = 0
+      let indicePico = 0
+      for (let i = 0; i < envelope.length; i++) {
+        if (envelope[i]! > pico) { pico = envelope[i]!; indicePico = i }
       }
+
+      let picoAmostra = 0
+      for (let i = 0; i < canal.length; i++) {
+        const v = Math.abs(canal[i]!)
+        if (v > picoAmostra) picoAmostra = v
+      }
+
+      // Tempo ate o envelope cair 60 dB abaixo do pico: a cauda percebida.
+      const limiar = pico * 0.001
+      let ultimaJanelaAcima = 0
+      for (let i = envelope.length - 1; i >= 0; i--) {
+        if (envelope[i]! > limiar) { ultimaJanelaAcima = i; break }
+      }
+      const ultimoAcimaDoLimiar = ultimaJanelaAcima * janelaRms
 
       // Energia por banda, por cruzamentos de zero em janelas curtas: caro
       // fazer FFT aqui, e a taxa de cruzamento ja separa grave de agudo.
@@ -457,8 +481,10 @@ Object.assign(window, {
       }
 
       return {
-        pico: +pico.toFixed(4),
-        ataqueMs: +((indicePico / taxa) * 1000).toFixed(2),
+        picoEnvelope: +pico.toFixed(4),
+        picoAmostra: +picoAmostra.toFixed(4),
+        // Janelas de 1 ms, entao o indice ja e o tempo em milissegundos.
+        ataqueMs: indicePico,
         caudaMs: +((ultimoAcimaDoLimiar / taxa) * 1000).toFixed(0),
         // Frequencia dominante estimada no inicio, no meio e no fim.
         brilhoInicioHz: bandas[0] ?? 0,
