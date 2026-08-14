@@ -48,7 +48,9 @@ const MATERIAIS = {
   metalEscuro: new MeshStandardMaterial({ color: 0x55585e, metalness: 0.88, roughness: 0.38 }),
   metalGasto: new MeshStandardMaterial({ color: 0x7a7d84, metalness: 0.8, roughness: 0.5 }),
   polimero: new MeshStandardMaterial({ color: 0x44474b, metalness: 0.1, roughness: 0.72 }),
-  madeira: new MeshStandardMaterial({ color: 0x8a5a2e, metalness: 0.02, roughness: 0.62 }),
+  // Madeira dessaturada: o tom saturado anterior puxava o olho para a coronha,
+  // que e justamente a peca que menos importa olhar.
+  madeira: new MeshStandardMaterial({ color: 0x6d5137, metalness: 0.02, roughness: 0.68 }),
   luva: new MeshStandardMaterial({ color: 0x5a6068, metalness: 0.05, roughness: 0.85 }),
   pele: new MeshStandardMaterial({ color: 0xc08a66, metalness: 0.0, roughness: 0.8 }),
   manga: new MeshStandardMaterial({ color: 0x5d6b52, metalness: 0.02, roughness: 0.88 }),
@@ -396,12 +398,16 @@ export class ViewModel {
     // A primeira versao usava valores maiores nos tres eixos e o conjunto saia
     // pela borda inferior direita: aparecia so um pedaco de braco. Trazer para
     // dentro e aproximar da camera resolve as duas coisas.
-    const quadrilX = 0.105
-    const quadrilY = -0.085
-    const quadrilZ = -0.34
+    // A distancia se mede pela peca MAIS PROXIMA da camera, nao pela origem do
+    // grupo. Com a raiz a 0,34 a coronha ficava a 8 cm do olho e tomava metade
+    // da tela; empurrando para 0,58 ela vai para uns 32 cm, que e onde a
+    // coronha de uma arma encostada no ombro realmente fica.
+    const quadrilX = 0.12
+    const quadrilY = -0.10
+    const quadrilZ = -0.58
     const alvoX = arma.alinhamentoAds.x
     const alvoY = arma.alinhamentoAds.y
-    const alvoZ = -0.20
+    const alvoZ = -0.42
 
     // Embalo da caminhada, que some conforme o jogador aponta: quem esta com a
     // arma no olho segura a respiracao.

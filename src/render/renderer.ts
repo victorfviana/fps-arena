@@ -113,7 +113,9 @@ export class Renderer {
     this.sun = this.buildLights(arena)
     this.buildArena(arena)
 
-    this.playerLight = new PointLight(0xfff2e0, 1.3, 1500, 1.1)
+    // Quase branca: qualquer tom quente aqui e multiplicado pelas texturas,
+    // que ja sao quentes, e o resultado tinge a arena inteira de vermelho.
+    this.playerLight = new PointLight(0xfffaf2, 1.15, 1500, 1.1)
     this.scene.add(this.playerLight)
 
     this.traceLines = this.buildTraces(0xffe0a0, this.tracePositions)
@@ -130,7 +132,10 @@ export class Renderer {
     viewPass.clearDepth = true
     this.composer.addPass(viewPass)
 
-    this.bloom = new UnrealBloomPass(new Vector2(1, 1), 0.42, 0.7, 0.85)
+    // Limiar alto e forca contida: o bloom deve pegar so o clarao do tiro e as
+    // luzes, nao espalhar brilho quente por parede iluminada — era dai que
+    // vinha parte da dominante avermelhada.
+    this.bloom = new UnrealBloomPass(new Vector2(1, 1), 0.3, 0.65, 0.92)
     this.composer.addPass(this.bloom)
     this.composer.addPass(new OutputPass())
 
