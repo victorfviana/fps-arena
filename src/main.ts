@@ -372,6 +372,25 @@ Object.assign(window, {
     },
     loop,
     restart,
+    renderer,
+    /**
+     * Troca de arma pelo mesmo caminho que o jogador percorre.
+     *
+     * Existe porque mexer em `game.aim` direto contorna o tratador de eventos
+     * do loop, e a verificacao passa a medir um estado que o jogo real nunca
+     * atinge — o rotulo do painel e o modelo na tela ficam para tras.
+     */
+    trocarArma: (id: 'shotgun' | 'rifle') => {
+      const events = game.tick({
+        forward: 0, side: 0, yawDelta: 0, pitchDelta: 0,
+        run: false, fire: false, aim: false, switchTo: id, cycleWeapon: false,
+      })
+      if (events.weaponSwapped) {
+        renderer.setWeapon(events.weaponSwapped)
+        weaponLabel.textContent = LOADOUT[events.weaponSwapped].label
+      }
+      return events.weaponSwapped
+    },
     getStats: () => ({
       fps: fps.value,
       worstFps: Number.isFinite(fps.worst) ? fps.worst : null,
