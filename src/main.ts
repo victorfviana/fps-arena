@@ -140,6 +140,10 @@ const loop = new FixedTimestepLoop({
     if (events.kills > 0) sfx.enemyDeath()
     else if (events.hits > 0) sfx.enemyPain()
 
+    for (const queda of events.killPositions) {
+      renderer.onEnemyDeath(queda.x, queda.y, queda.z)
+    }
+
     if (events.enemyShots.length > 0) {
       renderer.onEnemyFire(events.enemyShots, game.eyeY)
 

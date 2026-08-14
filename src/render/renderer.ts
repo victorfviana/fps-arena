@@ -52,6 +52,7 @@ import {
   createWallSurface,
   surfaceMaterial,
 } from './materials'
+import { ParticleSystem } from './particles'
 import { QUALITY_PRESETS, QualityGovernor, type QualityLevel, type QualitySettings } from './quality'
 import { ViewModel } from './viewmodel'
 
@@ -82,6 +83,8 @@ export class Renderer {
   private readonly enemyTraceLines: LineSegments
   private readonly enemyTracePositions = new Float32Array(MAX_TRACES * 6)
   private enemyTraceTimer = 0
+
+  private readonly particles: ParticleSystem
 
   /** Atraso do conjunto arma-maos em relacao ao giro do mouse. */
   private readonly inclinacao = { x: 0, y: 0 }
@@ -120,6 +123,7 @@ export class Renderer {
 
     this.traceLines = this.buildTraces(0xffe0a0, this.tracePositions)
     this.enemyTraceLines = this.buildTraces(0xff5a3c, this.enemyTracePositions)
+    this.particles = new ParticleSystem(this.scene)
 
     this.composer = new EffectComposer(this.renderer)
     this.composer.addPass(new RenderPass(this.scene, this.camera))
@@ -296,6 +300,38 @@ export class Renderer {
     }
 
     this.traceLines.geometry.attributes.position!.needsUpdate = true
+
+    // Faisca na parede, sangue no alvo: a cor do respingo diz se o tiro
+    // acertou antes que a barra de vida do inimigo mude.
+    for (let i = 0; i < count; i++) {
+      const trace = traces[i]!
+      const dirX = trace.fromX - trace.toX
+      const dirZ = trace.fromZ - trace.toZ
+      const comprimento = Math.hypot(dirX, dirZ) || 1
+
+      this.particles.emitir(
+        trace.hit ? 'sangue' : 'faisca',
+        trace.toX,
+        eyeY - 3,
+        trace.toZ,
+        trace.hit ? 5 : 3,
+        dirX / comprimento,
+        dirZ / comprimento,
+      )
+    }
+
+    // Fumaca na boca do cano, ligeiramente a frente do jogador.
+    const frenteX = -Math.sin(this.camera.rotation.y)
+    const frenteZ = -Math.cos(this.camera.rotation.y)
+    this.particles.emitir(
+      'fumaca',
+      this.camera.position.x + frenteX * 40,
+      eyeY - 6,
+      this.camera.position.z + frenteZ * 40,
+      4,
+      frenteX,
+      frenteZ,
+    )
   }
 
   /** Registra os tiros que vieram dos inimigos. */
@@ -328,6 +364,17 @@ export class Renderer {
   /** Troca a arma mostrada no viewmodel. */
   setWeapon(id: LoadoutId): void {
     this.viewModel.mostrar(id)
+  }
+
+  /**
+   * Baque na altura do corpo quando o inimigo morre.
+   *
+   * Separado do respingo do tiro de proposito: o tiro marca onde acertou, a
+   * morte marca quem caiu. Sao duas informacoes diferentes, e no meio de uma
+   * onda o jogador precisa das duas.
+   */
+  onEnemyDeath(x: number, y: number, z: number): void {
+    this.particles.emitir('sangue', x, y, z, 14)
   }
 
   /**
@@ -387,6 +434,7 @@ export class Renderer {
     this.flashTimer = decay(this.flashTimer, deltaMs, 55)
     this.traceTimer = decay(this.traceTimer, deltaMs, 70)
     this.enemyTraceTimer = decay(this.enemyTraceTimer, deltaMs, 260)
+    this.particles.update(deltaMs)
 
     const traceMaterial = this.traceLines.material as LineBasicMaterial
     traceMaterial.opacity = this.traceTimer * 0.7

@@ -76,6 +76,8 @@ export interface GameEvents {
   traces: ShotTrace[]
   hits: number
   kills: number
+  /** Onde cada inimigo caiu neste tic, para o desenho marcar o lugar. */
+  killPositions: Array<{ x: number; y: number; z: number }>
   damageTaken: number
   enemyShots: EnemyShot[]
   waveStarted: number | null
@@ -90,6 +92,7 @@ const NO_EVENTS: GameEvents = {
   traces: [],
   hits: 0,
   kills: 0,
+  killPositions: [],
   damageTaken: 0,
   enemyShots: [],
   waveStarted: null,
@@ -148,7 +151,9 @@ export class Game {
   tick(command: TicCommand): GameEvents {
     if (this.phase === 'over') return NO_EVENTS
 
-    const events: GameEvents = { ...NO_EVENTS, traces: [], enemyShots: [] }
+    const events: GameEvents = {
+      ...NO_EVENTS, traces: [], enemyShots: [], killPositions: [],
+    }
 
     // Troca e mira antes do movimento: a mira pesa o passo neste mesmo tic.
     if (command.switchTo) requestSwap(this.aim, command.switchTo)
@@ -299,6 +304,11 @@ export class Game {
         events.kills++
         this.kills++
         this.score += result.target.kind === 'imp' ? 60 : 25
+        events.killPositions.push({
+          x: result.target.x,
+          y: result.target.height * 0.55,
+          z: result.target.z,
+        })
       }
     }
   }

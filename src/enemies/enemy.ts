@@ -43,6 +43,15 @@ export interface Enemy {
   strafeDir: number
   /** Tics ate sortear um novo lado. */
   strafeTics: number
+  /**
+   * Distancia acumulada a pe, em map units.
+   *
+   * A animacao de caminhada deriva daqui, e nao do relogio. Andar preso a
+   * distancia mantem o pe plantado no chao: se a fase viesse do tempo, um
+   * inimigo empurrado ou travado numa quina continuaria mexendo as pernas
+   * parado, que e o defeito que denuncia animacao mal feita.
+   */
+  distanceWalked: number
 }
 
 /**
@@ -95,6 +104,7 @@ export function createEnemy(kind: EnemyKind, x: number, z: number): Enemy {
     attackCooldown: 0,
     strafeDir: 1,
     strafeTics: 0,
+    distanceWalked: 0,
   }
 }
 
@@ -152,14 +162,26 @@ export function tickEnemy(enemy: Enemy, context: EnemyTickContext): EnemyAttack 
 
   if (hasLineOfSight && distance <= behaviour.attackRange && enemy.attackCooldown <= 0) {
     enemy.state = 'attack'
+    // A pose de ataque precisa durar mais que o tic do golpe, senao pisca por
+    // 28 ms e o jogador nao chega a ver quem disparou nele.
+    enemy.stateTics = ATTACK_POSE_TICS
     enemy.attackCooldown = behaviour.attackCooldownTics
     return { enemyId: enemy.id, damage: behaviour.damage }
+  }
+
+  // Segura a pose de ataque enquanto ela durar, mesmo ja em recarga.
+  if (enemy.state === 'attack' && enemy.stateTics > 0) {
+    enemy.stateTics--
+    return null
   }
 
   enemy.state = 'chase'
   advance(enemy, context, distance, behaviour.preferredRange)
   return null
 }
+
+/** Quantos tics a pose de ataque permanece visivel. */
+export const ATTACK_POSE_TICS = 7
 
 function faceTarget(enemy: Enemy, target: Vec2): void {
   enemy.yaw = Math.atan2(-(target.x - enemy.x), -(target.z - enemy.z))
@@ -228,6 +250,10 @@ function advance(
     enemy.radius,
     context.walls,
   )
+
+  // Acumula o que ANDOU, nao o que tentou andar: preso contra parede, o passo
+  // para junto com o corpo.
+  enemy.distanceWalked += Math.hypot(moved.x - enemy.x, moved.z - enemy.z)
 
   enemy.x = moved.x
   enemy.z = moved.z
