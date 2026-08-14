@@ -57,17 +57,21 @@ export class Sfx {
       // limite digital e viram distorcao suja. O compressor segura os picos
       // sem achatar o ataque, que e justamente o que da impacto.
       const compressor = ctx.createDynamicsCompressor()
-      compressor.threshold.value = -9
-      compressor.knee.value = 8
-      compressor.ratio.value = 4
-      // Ataque de meio milissegundo: com os 2 ms anteriores, o compressor
-      // chegava depois do pico e achatava justamente o transiente que da
-      // impacto — o oposto do que se quer dele.
-      compressor.attack.value = 0.0005
-      compressor.release.value = 0.16
+      // Rede de seguranca, nao ferramenta de timbre.
+      //
+      // Com limiar em -9 dB as camadas somadas o acionavam a cada disparo: ele
+      // abaixava o transiente e soltava logo depois, e o envelope terminava
+      // com pico em 41 ms — bombeamento medido, nao suposto. Limiar alto e
+      // taxa baixa deixam o compressor so aparar somas de varios disparos
+      // simultaneos, que e para o que ele serve aqui.
+      compressor.threshold.value = -3
+      compressor.knee.value = 10
+      compressor.ratio.value = 3
+      compressor.attack.value = 0.0008
+      compressor.release.value = 0.25
 
       this.master = ctx.createGain()
-      this.master.gain.value = 0.5
+      this.master.gain.value = 0.72
       this.master.connect(compressor)
       compressor.connect(ctx.destination)
 
@@ -97,7 +101,7 @@ export class Sfx {
 
   toggleMute(): boolean {
     this.muted = !this.muted
-    if (this.master) this.master.gain.value = this.muted ? 0 : 0.5
+    if (this.master) this.master.gain.value = this.muted ? 0 : 0.72
     return this.muted
   }
 
@@ -230,13 +234,13 @@ export class Sfx {
 
     if (kind === 'shotgun') {
       // Onda de choque: grave, forte, com a frequencia caindo enquanto expande.
-      this.camadaRuido({ duracao: 0.34, ganho: 0.95 * v, tipo: 'lowpass', freq: 900, freqFinal: 90, reverb: 0.85 })
+      this.camadaRuido({ duracao: 0.34, ganho: 0.55 * v, tipo: 'lowpass', freq: 900, freqFinal: 90, reverb: 0.85 })
       // Corpo: a faixa media que da volume ao estouro.
-      this.camadaRuido({ duracao: 0.20, ganho: 0.55 * v, tipo: 'bandpass', freq: 1100, freqFinal: 380, q: 0.7, reverb: 0.7 })
+      this.camadaRuido({ duracao: 0.20, ganho: 0.32 * v, tipo: 'bandpass', freq: 1100, freqFinal: 380, q: 0.7, reverb: 0.7 })
       // Estalo: curtissimo e agudo, o que faz parecer perto.
-      this.camadaRuido({ duracao: 0.05, ganho: 0.5 * v, tipo: 'highpass', freq: 2600, freqFinal: 6500, reverb: 0.3 })
+      this.camadaRuido({ duracao: 0.05, ganho: 0.30 * v, tipo: 'highpass', freq: 2600, freqFinal: 6500, reverb: 0.3 })
       // Componente de pressao: quase infrassom, sentido mais que ouvido.
-      this.tom({ freq: 118, duracao: 0.16, ganho: 0.45 * v, tipo: 'sine', freqFinal: 42, reverb: 0.5 })
+      this.tom({ freq: 118, duracao: 0.16, ganho: 0.26 * v, tipo: 'sine', freqFinal: 42, reverb: 0.5 })
       // Bomba da escopeta, 130 ms depois: dois cliques metalicos.
       this.camadaRuido({ duracao: 0.035, ganho: 0.16, tipo: 'bandpass', freq: 2400, q: 3, atraso: 0.13 })
       this.camadaRuido({ duracao: 0.045, ganho: 0.19, tipo: 'bandpass', freq: 1700, q: 3, atraso: 0.24 })
@@ -244,11 +248,11 @@ export class Sfx {
     }
 
     if (kind === 'rifle') {
-      this.camadaRuido({ duracao: 0.19, ganho: 0.72 * v, tipo: 'lowpass', freq: 1500, freqFinal: 150, reverb: 0.8 })
-      this.camadaRuido({ duracao: 0.11, ganho: 0.6 * v, tipo: 'bandpass', freq: 2400, freqFinal: 900, q: 0.9, reverb: 0.6 })
+      this.camadaRuido({ duracao: 0.19, ganho: 0.42 * v, tipo: 'lowpass', freq: 1500, freqFinal: 150, reverb: 0.8 })
+      this.camadaRuido({ duracao: 0.11, ganho: 0.35 * v, tipo: 'bandpass', freq: 2400, freqFinal: 900, q: 0.9, reverb: 0.6 })
       // Estalo dominante: e o que separa rifle de escopeta ao ouvido.
-      this.camadaRuido({ duracao: 0.045, ganho: 0.72 * v, tipo: 'highpass', freq: 3800, freqFinal: 9000, reverb: 0.35 })
-      this.tom({ freq: 190, duracao: 0.09, ganho: 0.3 * v, tipo: 'sine', freqFinal: 70, reverb: 0.4 })
+      this.camadaRuido({ duracao: 0.045, ganho: 0.44 * v, tipo: 'highpass', freq: 3800, freqFinal: 9000, reverb: 0.35 })
+      this.tom({ freq: 190, duracao: 0.09, ganho: 0.18 * v, tipo: 'sine', freqFinal: 70, reverb: 0.4 })
       // Ferrolho voltando, bem mais rapido que a bomba da escopeta.
       this.camadaRuido({ duracao: 0.03, ganho: 0.14, tipo: 'bandpass', freq: 3200, q: 4, atraso: 0.055 })
       return
