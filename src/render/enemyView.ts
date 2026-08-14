@@ -16,7 +16,7 @@ import {
   ConeGeometry,
   Group,
   Mesh,
-  MeshLambertMaterial,
+  MeshStandardMaterial,
   Scene,
   SphereGeometry,
 } from 'three'
@@ -37,8 +37,8 @@ interface EnemyView {
   group: Group
   body: Mesh
   head: Mesh
-  bodyMaterial: MeshLambertMaterial
-  headMaterial: MeshLambertMaterial
+  bodyMaterial: MeshStandardMaterial
+  headMaterial: MeshStandardMaterial
   baseBody: Color
   baseHead: Color
   kind: EnemyKind
@@ -122,8 +122,13 @@ export class EnemyRenderer {
     const palette = PALETTE[kind]
 
     const bodyHeight = stats.height * 0.68
-    const bodyMaterial = new MeshLambertMaterial({ color: palette.body })
-    const headMaterial = new MeshLambertMaterial({ color: palette.head })
+    // Rugosidade alta e brilho quase nulo: sao criaturas, nao plastico.
+    const bodyMaterial = new MeshStandardMaterial({
+      color: palette.body, roughness: 0.82, metalness: 0.04,
+    })
+    const headMaterial = new MeshStandardMaterial({
+      color: palette.head, roughness: 0.74, metalness: 0.04,
+    })
 
     const body = new Mesh(
       new BoxGeometry(stats.radius * 1.7, bodyHeight, stats.radius * 1.1),
@@ -139,6 +144,12 @@ export class EnemyRenderer {
 
     const head = new Mesh(headGeometry, headMaterial)
     head.position.y = bodyHeight + stats.radius * 0.55
+
+    // Projetar e receber sombra e o que assenta o inimigo no chao; sem isso
+    // ele parece um adesivo flutuando sobre a arena.
+    body.castShadow = true
+    body.receiveShadow = true
+    head.castShadow = true
 
     const group = new Group()
     group.add(body)

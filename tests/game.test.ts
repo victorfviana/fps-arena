@@ -15,6 +15,7 @@ import type { TicCommand } from '../src/core/input'
 function command(overrides: Partial<TicCommand> = {}): TicCommand {
   return {
     forward: 0, side: 0, yawDelta: 0, pitchDelta: 0, run: false, fire: false,
+    aim: false, switchTo: null, cycleWeapon: false,
     ...overrides,
   }
 }

@@ -19,6 +19,12 @@ export interface TicCommand {
   pitchDelta: number
   run: boolean
   fire: boolean
+  /** Botao direito: mira apontada. */
+  aim: boolean
+  /** Arma pedida neste tic pelas teclas 1 e 2, ou null. */
+  switchTo: 'shotgun' | 'rifle' | null
+  /** Roda do mouse ou tecla Q: alterna para a proxima arma. */
+  cycleWeapon: boolean
 }
 
 const EMPTY_COMMAND: TicCommand = {
@@ -28,6 +34,9 @@ const EMPTY_COMMAND: TicCommand = {
   pitchDelta: 0,
   run: false,
   fire: false,
+  aim: false,
+  switchTo: null,
+  cycleWeapon: false,
 }
 
 export interface InputOptions {
@@ -49,6 +58,9 @@ export class Input {
   private pendingYaw = 0
   private pendingPitch = 0
   private firing = false
+  private aiming = false
+  private pendingSwitch: 'shotgun' | 'rifle' | null = null
+  private pendingCycle = false
   private locked = false
 
   private readonly sensitivity: number
@@ -76,6 +88,8 @@ export class Input {
     document.addEventListener('mousemove', this.onMouseMove)
     document.addEventListener('mousedown', this.onMouseDown)
     document.addEventListener('mouseup', this.onMouseUp)
+    document.addEventListener('contextmenu', this.onContextMenu)
+    document.addEventListener('wheel', this.onWheel, { passive: false })
     window.addEventListener('blur', this.onBlur)
   }
 
@@ -86,6 +100,8 @@ export class Input {
     document.removeEventListener('mousemove', this.onMouseMove)
     document.removeEventListener('mousedown', this.onMouseDown)
     document.removeEventListener('mouseup', this.onMouseUp)
+    document.removeEventListener('contextmenu', this.onContextMenu)
+    document.removeEventListener('wheel', this.onWheel)
     window.removeEventListener('blur', this.onBlur)
   }
 
@@ -113,10 +129,17 @@ export class Input {
       pitchDelta: this.pendingPitch,
       run: this.pressed.has('ShiftLeft') || this.pressed.has('ShiftRight'),
       fire: this.firing,
+      aim: this.aiming,
+      switchTo: this.pendingSwitch,
+      cycleWeapon: this.pendingCycle,
     }
 
     this.pendingYaw = 0
     this.pendingPitch = 0
+    // Pedidos de troca sao pulsos: valem um tic so, senao a arma trocaria
+    // repetidamente enquanto a tecla continuasse abaixada.
+    this.pendingSwitch = null
+    this.pendingCycle = false
 
     return command
   }
@@ -137,6 +160,22 @@ export class Input {
     this.pressed.add(event.code)
     // Setas e espaco rolam a pagina por baixo do canvas se deixarmos passar.
     if (event.code.startsWith('Arrow') || event.code === 'Space') event.preventDefault()
+
+    if (event.repeat) return
+    if (event.code === 'Digit1') this.pendingSwitch = 'shotgun'
+    if (event.code === 'Digit2') this.pendingSwitch = 'rifle'
+    if (event.code === 'KeyQ') this.pendingCycle = true
+  }
+
+  private readonly onWheel = (event: WheelEvent) => {
+    if (!this.isLocked) return
+    event.preventDefault()
+    this.pendingCycle = true
+  }
+
+  private readonly onContextMenu = (event: MouseEvent) => {
+    // Sem isto, o botao direito abre o menu do navegador em vez de mirar.
+    if (this.isLocked) event.preventDefault()
   }
 
   private readonly onKeyUp = (event: KeyboardEvent) => {
@@ -151,10 +190,12 @@ export class Input {
 
   private readonly onMouseDown = (event: MouseEvent) => {
     if (event.button === 0) this.firing = true
+    if (event.button === 2) this.aiming = true
   }
 
   private readonly onMouseUp = (event: MouseEvent) => {
     if (event.button === 0) this.firing = false
+    if (event.button === 2) this.aiming = false
   }
 
   private readonly onPointerLockChange = () => {
@@ -173,6 +214,9 @@ export class Input {
   private releaseAll(): void {
     this.pressed.clear()
     this.firing = false
+    this.aiming = false
+    this.pendingSwitch = null
+    this.pendingCycle = false
     this.pendingYaw = 0
     this.pendingPitch = 0
   }

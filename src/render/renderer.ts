@@ -1,59 +1,77 @@
 /**
  * Camada de desenho.
  *
- * Toda a cena vive em map units do DOOM — a mesma unidade da fisica. A camera
- * fixa o campo de visao HORIZONTAL em 90 graus, como o original; o Three.js
- * pede o vertical, entao convertemos a cada mudanca de proporcao da janela.
- * Sem isso, uma tela ultrawide entregaria mais visao periferica e mudaria a
- * dificuldade do jogo conforme o monitor.
+ * Tres passadas por quadro, nesta ordem:
+ *   1. O mundo, com o campo de visao horizontal de 90 graus do DOOM.
+ *   2. O viewmodel (bracos e arma), em cena e camera proprias, com campo de
+ *      visao estreito e limpando so a profundidade — assim a arma nunca
+ *      atravessa parede e nao sai deformada pela perspectiva larga.
+ *   3. Bloom e correcao de cor sobre o conjunto.
+ *
+ * O mundo inteiro vive em map units do DOOM, a mesma unidade da fisica. A
+ * camera fixa o campo de visao HORIZONTAL; o Three.js pede o vertical, entao
+ * convertemos a cada mudanca de proporcao da janela. Sem isso, uma tela
+ * ultrawide entregaria mais visao periferica e mudaria a dificuldade do jogo.
  */
 
 import {
+  ACESFilmicToneMapping,
   AmbientLight,
   BackSide,
   BoxGeometry,
   BufferAttribute,
   BufferGeometry,
+  Color,
+  DirectionalLight,
   Fog,
-  Group,
   HemisphereLight,
   LineBasicMaterial,
   LineSegments,
   Mesh,
-  MeshBasicMaterial,
-  MeshLambertMaterial,
+  MeshStandardMaterial,
+  PCFSoftShadowMap,
   PerspectiveCamera,
   PlaneGeometry,
   PointLight,
   Scene,
+  Vector2,
   WebGLRenderer,
 } from 'three'
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 
 import { FOV_HORIZONTAL_DEG, VIEW_HEIGHT } from '../core/doom'
 import type { EnemyShot, ShotTrace } from '../game'
+import type { LoadoutId } from '../weapons/loadout'
 import type { Arena } from '../world/arena'
-import { createCeilingTexture, createFloorTexture, createWallTexture } from './textures'
+import {
+  createCeilingSurface,
+  createFloorSurface,
+  createWallSurface,
+  surfaceMaterial,
+} from './materials'
+import { QUALITY_PRESETS, QualityGovernor, type QualityLevel, type QualitySettings } from './quality'
+import { ViewModel } from './viewmodel'
 
 /** Quantos rastros de tiro cabem na tela ao mesmo tempo. */
 const MAX_TRACES = 32
 
-/** Converte campo de visao horizontal em vertical, dada a proporcao da tela. */
-export function horizontalToVerticalFov(horizontalDeg: number, aspect: number): number {
-  const horizontalRad = (horizontalDeg * Math.PI) / 180
-  const verticalRad = 2 * Math.atan(Math.tan(horizontalRad / 2) / aspect)
-  return (verticalRad * 180) / Math.PI
-}
+const COR_NEBLINA = 0x2a2620
 
 export class Renderer {
   readonly scene = new Scene()
   readonly camera: PerspectiveCamera
-  private readonly renderer: WebGLRenderer
-  private readonly playerLight: PointLight
+  readonly viewModel = new ViewModel()
 
-  /** Arma presa a camera, com recuo. */
-  private readonly viewmodel = new Group()
-  private readonly muzzleFlash: Mesh
-  private readonly muzzleLight: PointLight
+  private readonly renderer: WebGLRenderer
+  private readonly composer: EffectComposer
+  private readonly bloom: UnrealBloomPass
+  private readonly playerLight: PointLight
+  private readonly sun: DirectionalLight
+  private readonly governor: QualityGovernor
+
   private recoil = 0
   private flashTimer = 0
 
@@ -61,10 +79,13 @@ export class Renderer {
   private readonly tracePositions = new Float32Array(MAX_TRACES * 6)
   private traceTimer = 0
 
-  /** Rastros do tiro inimigo, em cor propria e com vida mais longa. */
   private readonly enemyTraceLines: LineSegments
   private readonly enemyTracePositions = new Float32Array(MAX_TRACES * 6)
   private enemyTraceTimer = 0
+
+  /** Atraso do conjunto arma-maos em relacao ao giro do mouse. */
+  private readonly inclinacao = { x: 0, y: 0 }
+  private balanco = 0
 
   constructor(private readonly canvas: HTMLCanvasElement, arena: Arena) {
     this.renderer = new WebGLRenderer({
@@ -72,85 +93,135 @@ export class Renderer {
       antialias: true,
       powerPreference: 'high-performance',
     })
-    // Mesma cor da neblina: qualquer diferenca aqui vira uma borda visivel no
-    // limite do alcance de visao.
-    this.renderer.setClearColor(0x2a2620)
+    this.renderer.setClearColor(COR_NEBLINA)
+    // Tone mapping filmico: sem ele as luzes fortes estouram em branco chapado
+    // e a cena inteira parece lavada, que era exatamente o defeito anterior.
+    this.renderer.toneMapping = ACESFilmicToneMapping
+    this.renderer.toneMappingExposure = 1.05
+    this.renderer.shadowMap.enabled = true
+    this.renderer.shadowMap.type = PCFSoftShadowMap
+    // O viewmodel entra numa segunda passada; limpar automaticamente apagaria
+    // o mundo desenhado antes dele.
+    this.renderer.autoClear = false
 
     this.camera = new PerspectiveCamera(75, 1, 1, 8000)
-    // A ordem YXZ evita que o giro horizontal incline o horizonte quando o
-    // jogador esta olhando para cima ou para baixo.
     this.camera.rotation.order = 'YXZ'
     this.camera.position.set(arena.playerStart.x, VIEW_HEIGHT, arena.playerStart.z)
 
-    // Neblina na cor do fundo: esconde o limite do mundo e da profundidade
-    // sem custo de geometria. Comeca tarde de proposito — puxar a neblina para
-    // perto engolia a parede oposta e a arena parecia um corredor sem fim.
-    this.scene.fog = new Fog(0x2a2620, arena.size * 1.1, arena.size * 2.6)
+    this.scene.fog = new Fog(COR_NEBLINA, arena.size * 1.1, arena.size * 2.6)
 
-    this.buildLights()
+    this.sun = this.buildLights(arena)
     this.buildArena(arena)
 
-    // Luz que acompanha o jogador. Alcance maior que a metade da arena para
-    // que o inimigo se destaque do fundo antes de chegar perto demais.
     this.playerLight = new PointLight(0xfff2e0, 1.3, 1500, 1.1)
     this.scene.add(this.playerLight)
 
-    this.muzzleFlash = this.buildViewmodel()
-    this.muzzleLight = new PointLight(0xffc06a, 0, 700, 1.8)
-    this.scene.add(this.muzzleLight)
-
     this.traceLines = this.buildTraces(0xffe0a0, this.tracePositions)
-    // Vermelho quente para o tiro que vem em voce: precisa ser distinguivel do
-    // proprio disparo num relance, sem exigir leitura.
     this.enemyTraceLines = this.buildTraces(0xff5a3c, this.enemyTracePositions)
+
+    this.composer = new EffectComposer(this.renderer)
+    this.composer.addPass(new RenderPass(this.scene, this.camera))
+
+    const viewPass = new RenderPass(this.viewModel.scene, this.viewModel.camera)
+    // Nao limpa a cor: o viewmodel e desenhado por cima do mundo. A limpeza da
+    // profundidade acontece no proprio passe, o que impede a arma de ser
+    // recortada por parede encostada.
+    viewPass.clear = false
+    viewPass.clearDepth = true
+    this.composer.addPass(viewPass)
+
+    this.bloom = new UnrealBloomPass(new Vector2(1, 1), 0.42, 0.7, 0.85)
+    this.composer.addPass(this.bloom)
+    this.composer.addPass(new OutputPass())
+
+    this.governor = new QualityGovernor('alto', (_nivel, settings) => {
+      this.aplicarQualidade(settings)
+    })
+    this.aplicarQualidade(QUALITY_PRESETS.alto)
 
     this.resize()
     window.addEventListener('resize', this.resize)
   }
 
   /**
-   * Arma na tela.
+   * Luz.
    *
-   * Nao e decoracao: sem uma referencia fixa no campo de visao, o jogador
-   * perde a nocao de para onde esta apontando e o recuo nao tem em que se
-   * apoiar. O modelo fica preso a camera, entao acompanha a mira sem calculo.
+   * Uma direcional com sombra da o volume — sem sombra projetada, pilar e
+   * inimigo parecem adesivos colados no chao. A ambiente e a hemisferica
+   * garantem que nada fique preto de vez, porque legibilidade do combate vem
+   * antes de atmosfera.
    */
-  private buildViewmodel(): Mesh {
-    // As medidas seguem do campo de visao, nao de chute. Com 90 graus na
-    // horizontal e a arma a 30 unidades da camera, a altura visivel ali e de
-    // cerca de 28 unidades: um cano de 4 ocupa uns 15% da tela, que e o que
-    // da presenca sem tapar o alvo. A primeira versao ficava a 13 unidades e
-    // era cortada pelo plano de corte proximo.
-    const metal = new MeshLambertMaterial({ color: 0x3c3c3a })
-    const wood = new MeshLambertMaterial({ color: 0x6b4526 })
+  private buildLights(arena: Arena): DirectionalLight {
+    this.scene.add(new AmbientLight(0x6e7280, 1.15))
+    this.scene.add(new HemisphereLight(0xa8b6d0, 0x50463c, 0.9))
 
-    // A 35 unidades da camera, o campo visivel mede cerca de 70 por 33
-    // unidades. Um cano de 3 de largura ocupa uns 4% da tela e o conjunto sai
-    // do canto inferior direito. As duas versoes anteriores erraram por ficar
-    // perto demais: a primeira era cortada pelo plano de corte, a segunda
-    // tomava um terco da tela.
-    const barrel = new Mesh(new BoxGeometry(3, 2.8, 28), metal)
-    barrel.position.set(0, 0, -35)
+    const sun = new DirectionalLight(0xffe8c8, 2.1)
+    sun.position.set(arena.size * 0.35, arena.wallHeight * 3.2, arena.size * 0.2)
+    sun.castShadow = true
 
-    const stock = new Mesh(new BoxGeometry(3.8, 4.4, 14), wood)
-    stock.position.set(0, -1.6, -14)
+    const alcance = arena.size * 0.62
+    sun.shadow.camera.left = -alcance
+    sun.shadow.camera.right = alcance
+    sun.shadow.camera.top = alcance
+    sun.shadow.camera.bottom = -alcance
+    sun.shadow.camera.near = 10
+    sun.shadow.camera.far = arena.wallHeight * 8
+    // Escala do mundo e grande; sem este afastamento a sombra sai listrada.
+    sun.shadow.bias = -0.0016
+    sun.shadow.normalBias = 2.5
 
-    const flash = new Mesh(
-      new PlaneGeometry(15, 15),
-      new MeshBasicMaterial({ color: 0xffcf7a, transparent: true, opacity: 0, fog: false }),
+    this.scene.add(sun)
+    this.scene.add(sun.target)
+    return sun
+  }
+
+  private buildArena(arena: Arena): void {
+    const tiles = arena.size / 256
+
+    const chao = new Mesh(
+      new PlaneGeometry(arena.size, arena.size),
+      surfaceMaterial(createFloorSurface(), tiles, { metalness: 0.35, normalScale: 1.1 }),
     )
-    flash.position.set(0, 0.4, -51)
+    chao.rotation.x = -Math.PI / 2
+    chao.receiveShadow = true
+    this.scene.add(chao)
 
-    this.viewmodel.add(barrel)
-    this.viewmodel.add(stock)
-    this.viewmodel.add(flash)
-    // Abaixo e a direita do centro, como uma arma empunhada.
-    this.viewmodel.position.set(12, -9, 0)
-    this.viewmodel.rotation.set(0.04, 0.03, 0)
-    this.camera.add(this.viewmodel)
-    this.scene.add(this.camera)
+    const teto = new Mesh(
+      new PlaneGeometry(arena.size, arena.size),
+      surfaceMaterial(createCeilingSurface(), tiles, { metalness: 0.05 }),
+    )
+    teto.rotation.x = Math.PI / 2
+    teto.position.y = arena.wallHeight
+    this.scene.add(teto)
 
-    return flash
+    const paredeMaps = createWallSurface()
+    const sala = new Mesh(
+      new BoxGeometry(arena.size, arena.wallHeight, arena.size),
+      surfaceMaterial(paredeMaps, 1, { metalness: 0.06, normalScale: 1.4 }),
+    )
+    ;(sala.material as MeshStandardMaterial).side = BackSide
+    // A caixa envolvente usa uma repeticao propria: as paredes sao muito mais
+    // largas que altas, e uma repeticao uniforme esticaria os blocos.
+    for (const textura of [paredeMaps.map, paredeMaps.normalMap, paredeMaps.roughnessMap]) {
+      textura.repeat.set(arena.size / 320, arena.wallHeight / 320)
+      textura.needsUpdate = true
+    }
+    sala.position.y = arena.wallHeight / 2
+    sala.receiveShadow = true
+    this.scene.add(sala)
+
+    const materialObstaculo = surfaceMaterial(createWallSurface(), 1, {
+      metalness: 0.1,
+      normalScale: 1.2,
+    })
+
+    for (const box of arena.boxes) {
+      const mesh = new Mesh(new BoxGeometry(box.width, box.height, box.depth), materialObstaculo)
+      mesh.position.set(box.x, box.height / 2, box.z)
+      mesh.castShadow = true
+      mesh.receiveShadow = true
+      this.scene.add(mesh)
+    }
   }
 
   private buildTraces(color: number, positions: Float32Array): LineSegments {
@@ -161,12 +232,27 @@ export class Renderer {
       geometry,
       new LineBasicMaterial({ color, transparent: true, opacity: 0, fog: false }),
     )
-    // O rastro so vive alguns quadros; nao deve ser descartado pelo culling
-    // quando a caixa envolvente ficar desatualizada.
     lines.frustumCulled = false
     this.scene.add(lines)
-
     return lines
+  }
+
+  private aplicarQualidade(settings: QualitySettings): void {
+    this.renderer.shadowMap.enabled = settings.shadows
+    this.sun.castShadow = settings.shadows
+    this.sun.shadow.mapSize.set(settings.shadowMapSize, settings.shadowMapSize)
+    // Descartar o mapa antigo forca o Three a recriar no tamanho novo.
+    this.sun.shadow.map?.dispose()
+    this.sun.shadow.map = null
+
+    this.bloom.enabled = settings.bloom
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, settings.pixelRatio))
+    this.resize()
+  }
+
+  /** Nivel de qualidade em vigor, para o painel de diagnostico. */
+  get qualidade(): QualityLevel {
+    return this.governor.nivel
   }
 
   /** Registra o disparo: recuo, clarao e rastros dos chumbos. */
@@ -181,8 +267,6 @@ export class Renderer {
       const offset = i * 6
 
       if (!trace) {
-        // Degenera o segmento em um ponto: nao aparece, e evita realocar
-        // a geometria a cada disparo de arma com contagem diferente.
         this.tracePositions.fill(0, offset, offset + 6)
         continue
       }
@@ -198,13 +282,7 @@ export class Renderer {
     this.traceLines.geometry.attributes.position!.needsUpdate = true
   }
 
-  /**
-   * Registra os tiros que vieram nos inimigos.
-   *
-   * Desenhados da arma deles ate o jogador, na altura do olho. Duram mais que
-   * o proprio disparo do jogador de proposito: quem levou o tiro precisa de
-   * tempo para virar a cabeca e achar a origem.
-   */
+  /** Registra os tiros que vieram dos inimigos. */
   onEnemyFire(shots: readonly EnemyShot[], eyeY: number): void {
     const rastros = shots.filter((shot) => !shot.melee)
     if (rastros.length === 0) return
@@ -231,108 +309,102 @@ export class Renderer {
     this.enemyTraceLines.geometry.attributes.position!.needsUpdate = true
   }
 
-  private buildLights(): void {
-    // A arena precisa ser legivel antes de ser atmosferica: com a iluminacao
-    // baixa demais, a silhueta do inimigo some contra a parede e o combate
-    // vira adivinhacao. Os valores ja subiram duas vezes depois de olhar a
-    // tela em vez de confiar no numero — monitor e captura de tela mentem em
-    // direcoes opostas, e no fim quem decide e o olho de quem joga.
-    // Luz de cima levemente fria contra textura quente: sem isso a arena
-    // inteira puxa para o vermelho quando a iluminacao sobe, e o imp — que e
-    // laranja — deixa de se destacar do fundo.
-    this.scene.add(new AmbientLight(0x8e909c, 2.3))
-    this.scene.add(new HemisphereLight(0xc2ccdf, 0x585048, 1.7))
-  }
-
-  private buildArena(arena: Arena): void {
-    const wallTexture = createWallTexture()
-    const floorTexture = createFloorTexture()
-    const ceilingTexture = createCeilingTexture()
-
-    const tilesPerSide = arena.size / 128
-    floorTexture.repeat.set(tilesPerSide, tilesPerSide)
-    ceilingTexture.repeat.set(tilesPerSide, tilesPerSide)
-
-    const floor = new Mesh(
-      new PlaneGeometry(arena.size, arena.size),
-      new MeshLambertMaterial({ map: floorTexture }),
-    )
-    floor.rotation.x = -Math.PI / 2
-    this.scene.add(floor)
-
-    const ceiling = new Mesh(
-      new PlaneGeometry(arena.size, arena.size),
-      new MeshLambertMaterial({ map: ceilingTexture }),
-    )
-    ceiling.rotation.x = Math.PI / 2
-    ceiling.position.y = arena.wallHeight
-    this.scene.add(ceiling)
-
-    // Perimetro: uma caixa gigante desenhada por dentro custa menos que quatro
-    // planos e nunca deixa fresta na quina.
-    const room = new Mesh(
-      new BoxGeometry(arena.size, arena.wallHeight, arena.size),
-      new MeshLambertMaterial({ map: wallTexture, side: BackSide }),
-    )
-    room.position.y = arena.wallHeight / 2
-    this.scene.add(room)
-
-    const obstacleMaterial = new MeshLambertMaterial({ map: wallTexture })
-    for (const box of arena.boxes) {
-      const mesh = new Mesh(
-        new BoxGeometry(box.width, box.height, box.depth),
-        obstacleMaterial,
-      )
-      mesh.position.set(box.x, box.height / 2, box.z)
-      this.scene.add(mesh)
-    }
-  }
-
-  /** Posiciona a camera no olho do jogador. */
-  setView(x: number, y: number, z: number, yaw: number, pitch: number): void {
-    // O recuo empurra a camera para tras da mira, nao a mira para longe do
-    // alvo: mexer no angulo faria o jogador perder o alvo a cada disparo.
-    this.camera.position.set(x, y + this.recoil * 1.2, z)
-    this.camera.rotation.set(pitch + this.recoil * 0.035, yaw, 0)
-    this.playerLight.position.set(x, y + 8, z)
-
-    this.viewmodel.position.z = this.recoil * 11
-    this.viewmodel.position.y = -9 - this.recoil * 2.2
-    this.viewmodel.rotation.x = 0.04 + this.recoil * 0.18
-    this.muzzleLight.position.set(x, y, z)
+  /** Troca a arma mostrada no viewmodel. */
+  setWeapon(id: LoadoutId): void {
+    this.viewModel.mostrar(id)
   }
 
   /**
-   * Faz decair os efeitos do disparo.
+   * Posiciona a camera no olho do jogador.
    *
-   * @param deltaMs tempo real desde o quadro anterior. O decaimento e por
-   *   tempo, e nao por quadro, senao o clarao duraria o dobro num monitor de
-   *   30 Hz e metade num de 120 Hz.
+   * @param adsProgress 0 no quadril, 1 apontado — fecha o campo de visao.
    */
-  updateEffects(deltaMs: number): void {
+  setView(
+    x: number,
+    y: number,
+    z: number,
+    yaw: number,
+    pitch: number,
+    adsProgress: number,
+    fovAlvoDeg: number,
+  ): void {
+    this.camera.position.set(x, y + this.recoil * 1.2, z)
+    this.camera.rotation.set(pitch + this.recoil * 0.03, yaw, 0)
+    this.playerLight.position.set(x, y + 8, z)
+
+    // A sombra acompanha o jogador: um mapa que cobrisse a arena inteira com
+    // resolucao util custaria caro demais.
+    this.sun.target.position.set(x, 0, z)
+    this.sun.position.set(x + 900, 2600, z + 500)
+
+    this.aplicarFov(fovAlvoDeg)
+    this.adsAtual = adsProgress
+  }
+
+  private adsAtual = 0
+  private fovAplicado = -1
+
+  private aplicarFov(fovHorizontalDeg: number): void {
+    if (Math.abs(fovHorizontalDeg - this.fovAplicado) < 0.01) return
+    this.fovAplicado = fovHorizontalDeg
+
+    const aspect = this.camera.aspect
+    this.camera.fov = horizontalToVerticalFov(fovHorizontalDeg, aspect)
+    this.camera.updateProjectionMatrix()
+  }
+
+  /**
+   * Atualiza os efeitos que decaem com o tempo real.
+   *
+   * @param deltaMs tempo desde o quadro anterior. O decaimento e por tempo, e
+   *   nao por quadro, senao o clarao duraria o dobro num monitor de 30 Hz.
+   */
+  updateEffects(
+    deltaMs: number,
+    estado: {
+      swapProgress: number
+      velocidadeNormalizada: number
+      giroMouse: { x: number; y: number }
+    },
+  ): void {
     this.recoil = decay(this.recoil, deltaMs, 90)
     this.flashTimer = decay(this.flashTimer, deltaMs, 55)
     this.traceTimer = decay(this.traceTimer, deltaMs, 70)
-
-    const flashMaterial = this.muzzleFlash.material as MeshBasicMaterial
-    flashMaterial.opacity = this.flashTimer
-    this.muzzleFlash.visible = this.flashTimer > 0.01
-    this.muzzleLight.intensity = this.flashTimer * 4
+    this.enemyTraceTimer = decay(this.enemyTraceTimer, deltaMs, 260)
 
     const traceMaterial = this.traceLines.material as LineBasicMaterial
     traceMaterial.opacity = this.traceTimer * 0.7
     this.traceLines.visible = this.traceTimer > 0.01
 
-    // Meia-vida bem maior: o rastro inimigo e a unica pista de onde veio o
-    // dano, e some antes de ser lido se decair na mesma velocidade do seu.
-    this.enemyTraceTimer = decay(this.enemyTraceTimer, deltaMs, 260)
     const enemyMaterial = this.enemyTraceLines.material as LineBasicMaterial
     enemyMaterial.opacity = this.enemyTraceTimer * 0.9
     this.enemyTraceLines.visible = this.enemyTraceTimer > 0.01
+
+    // Balanco do passo, em fase com o tempo real e proporcional a velocidade.
+    this.balanco += (deltaMs / 1000) * 9 * estado.velocidadeNormalizada
+
+    // O atraso da arma persegue o giro do mouse e volta ao centro sozinho.
+    const alvoX = clamp(estado.giroMouse.x * 0.9, -0.06, 0.06)
+    const alvoY = clamp(estado.giroMouse.y * 0.9, -0.05, 0.05)
+    const suavizacao = Math.min(1, deltaMs / 90)
+    this.inclinacao.x += (alvoX - this.inclinacao.x) * suavizacao
+    this.inclinacao.y += (alvoY - this.inclinacao.y) * suavizacao
+
+    this.viewModel.posicionar(
+      this.adsAtual,
+      this.recoil,
+      estado.swapProgress,
+      this.balanco,
+      estado.velocidadeNormalizada,
+      this.inclinacao,
+    )
+    this.viewModel.clarao(this.flashTimer)
   }
 
   render(): void {
-    this.renderer.render(this.scene, this.camera)
+    this.renderer.clear()
+    this.composer.render()
+    this.governor.registrarQuadro(performance.now())
   }
 
   private readonly resize = () => {
@@ -341,13 +413,13 @@ export class Renderer {
     const aspect = width / height
 
     this.camera.aspect = aspect
-    this.camera.fov = horizontalToVerticalFov(FOV_HORIZONTAL_DEG, aspect)
-    this.camera.updateProjectionMatrix()
+    this.fovAplicado = -1
+    this.aplicarFov(FOV_HORIZONTAL_DEG)
+    this.viewModel.redimensionar(aspect)
 
-    // Teto de 2x no devicePixelRatio: acima disso o custo sobe rapido e o
-    // ganho visual e pequeno, e queremos folga no orcamento de 60 fps.
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     this.renderer.setSize(width, height, false)
+    this.composer.setSize(width, height)
+    this.bloom.setSize(width, height)
   }
 
   dispose(): void {
@@ -356,8 +428,21 @@ export class Renderer {
   }
 }
 
+/** Converte campo de visao horizontal em vertical, dada a proporcao da tela. */
+export function horizontalToVerticalFov(horizontalDeg: number, aspect: number): number {
+  const horizontalRad = (horizontalDeg * Math.PI) / 180
+  const verticalRad = 2 * Math.atan(Math.tan(horizontalRad / 2) / aspect)
+  return (verticalRad * 180) / Math.PI
+}
+
 /** Decaimento exponencial por tempo real, com meia-vida em milissegundos. */
 function decay(value: number, deltaMs: number, halfLifeMs: number): number {
   if (value <= 0.001) return 0
   return value * Math.pow(0.5, deltaMs / halfLifeMs)
 }
+
+function clamp(v: number, min: number, max: number): number {
+  return v < min ? min : v > max ? max : v
+}
+
+export { Color }

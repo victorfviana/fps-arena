@@ -29,6 +29,9 @@ function command(overrides: Partial<TicCommand> = {}): TicCommand {
     pitchDelta: 0,
     run: false,
     fire: false,
+    aim: false,
+    switchTo: null,
+    cycleWeapon: false,
     ...overrides,
   }
 }

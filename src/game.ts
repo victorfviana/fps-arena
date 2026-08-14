@@ -20,6 +20,16 @@ import {
 } from './enemies/enemy'
 import { createPlayer, eyeHeight, forwardVector, tickPlayer, type PlayerState } from './player/player'
 import { createWeapon, tickWeapon, type WeaponId, type WeaponState } from './weapons/weapon'
+import {
+  createAimState,
+  currentWeapon,
+  isSwapping,
+  requestNextWeapon,
+  requestSwap,
+  tickAim,
+  type AimState,
+} from './weapons/aiming'
+import { effectiveMoveScale, effectiveSpread, type LoadoutId } from './weapons/loadout'
 import { hitscan } from './weapons/hitscan'
 import { createArena, type Arena } from './world/arena'
 import {
@@ -70,6 +80,8 @@ export interface GameEvents {
   enemyShots: EnemyShot[]
   waveStarted: number | null
   playerDied: boolean
+  /** Arma que entrou em cena neste tic, quando houve troca. */
+  weaponSwapped: LoadoutId | null
 }
 
 const NO_EVENTS: GameEvents = {
@@ -82,6 +94,7 @@ const NO_EVENTS: GameEvents = {
   enemyShots: [],
   waveStarted: null,
   playerDied: false,
+  weaponSwapped: null,
 }
 
 /** Como o jogador morreu, para a tela de fim explicar em vez de so contar. */
@@ -99,6 +112,8 @@ export class Game {
   readonly player: PlayerState
   weapon: WeaponState
   readonly enemies: Enemy[] = []
+  /** Mira apontada e troca de arma. */
+  readonly aim: AimState = createAimState()
 
   phase: GamePhase = 'intermission'
   wave = 0
@@ -135,7 +150,25 @@ export class Game {
 
     const events: GameEvents = { ...NO_EVENTS, traces: [], enemyShots: [] }
 
-    tickPlayer(this.player, command, this.arena.walls)
+    // Troca e mira antes do movimento: a mira pesa o passo neste mesmo tic.
+    if (command.switchTo) requestSwap(this.aim, command.switchTo)
+    else if (command.cycleWeapon) requestNextWeapon(this.aim)
+
+    const armaAntes = this.aim.current
+    tickAim(this.aim, command.aim)
+    if (this.aim.current !== armaAntes) {
+      this.weapon = createWeapon(this.aim.current)
+      events.weaponSwapped = this.aim.current
+    }
+
+    // Apontar reduz a velocidade. E a unica concessao ao modelo moderno de
+    // locomocao: a base continua a do DOOM, rapida e sem inercia falsa.
+    const escala = effectiveMoveScale(currentWeapon(this.aim), this.aim.adsProgress)
+    tickPlayer(
+      this.player,
+      escala === 1 ? command : { ...command, forward: command.forward * escala, side: command.side * escala },
+      this.arena.walls,
+    )
     this.advanceWave(events)
     this.fire(command, events)
     this.advanceEnemies(events)
@@ -215,14 +248,24 @@ export class Game {
   }
 
   private fire(command: TicCommand, events: GameEvents): void {
-    const event = tickWeapon(this.weapon, command.fire, this.random)
+    // Nao se atira no meio da troca: a arma esta fora de posicao.
+    const querAtirar = command.fire && !isSwapping(this.aim)
+    const event = tickWeapon(this.weapon, querAtirar, this.random)
     if (!event) return
 
     events.fired = true
     events.weaponFired = event.weapon
 
+    // A dispersao sorteada pela arma pressupoe tiro no quadril. Apontado, ela
+    // encolhe ate o valor do perfil de mira — e o ganho que justifica o custo
+    // de velocidade de quem aponta.
+    const arma = currentWeapon(this.aim)
+    const escalaSpread = arma.spreadDeg === 0
+      ? 1
+      : effectiveSpread(arma, this.aim.adsProgress) / arma.spreadDeg
+
     for (const pellet of event.pellets) {
-      const angle = this.player.yaw + pellet.angleOffset
+      const angle = this.player.yaw + pellet.angleOffset * escalaSpread
       const result = hitscan(
         this.player.x,
         this.player.z,

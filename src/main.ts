@@ -8,7 +8,15 @@
  */
 
 import { Sfx } from './audio/sfx'
-import { TICRATE, TIC_MS, perTicToPerSecond } from './core/doom'
+import {
+  FOV_HORIZONTAL_DEG,
+  TERMINAL_SPEED,
+  TICRATE,
+  TIC_MS,
+  perTicToPerSecond,
+} from './core/doom'
+import { currentWeapon, swapProgress } from './weapons/aiming'
+import { LOADOUT, effectiveFov } from './weapons/loadout'
 import { Input } from './core/input'
 import { FixedTimestepLoop } from './core/loop'
 import { Game } from './game'
@@ -30,6 +38,9 @@ const gameOverScreen = requireElement<HTMLDivElement>('#gameover')
 const startButton = requireElement<HTMLButtonElement>('#start')
 const restartButton = requireElement<HTMLButtonElement>('#restart')
 const statsPanel = requireElement<HTMLPreElement>('#stats')
+const scope = requireElement<HTMLDivElement>('#scope')
+const crosshair = requireElement<HTMLDivElement>('#crosshair')
+const weaponLabel = requireElement<HTMLDivElement>('#weapon')
 const finalScore = requireElement<HTMLDivElement>('#final-score')
 const finalKills = requireElement<HTMLSpanElement>('#final-kills')
 const deathCause = requireElement<HTMLParagraphElement>('#death-cause')
@@ -56,6 +67,9 @@ const sfx = new Sfx()
 
 /** Estado do tic anterior, para interpolar o desenho. */
 const previous = { x: game.player.x, z: game.player.z, eye: game.eyeY }
+
+/** Giro do mouse do ultimo tic, que o desenho usa para o atraso da arma. */
+const giroSuavizado = { x: 0, y: 0 }
 
 /**
  * Medidor de latencia de entrada.
@@ -145,6 +159,15 @@ const loop = new FixedTimestepLoop({
       sfx.waveStart()
     }
 
+    if (events.weaponSwapped) {
+      renderer.setWeapon(events.weaponSwapped)
+      weaponLabel.textContent = LOADOUT[events.weaponSwapped].label
+    }
+
+    // Acumula o giro do mouse deste tic para o atraso da arma no desenho.
+    giroSuavizado.x = command.yawDelta * 5
+    giroSuavizado.y = command.pitchDelta * 5
+
     if (events.playerDied) endGame()
 
     const moved = game.player.x !== previous.x || game.player.z !== previous.z
@@ -165,10 +188,33 @@ const loop = new FixedTimestepLoop({
     const z = previous.z + (game.player.z - previous.z) * alpha
     const eye = previous.eye + (game.eyeY - previous.eye) * alpha
 
-    renderer.updateEffects(deltaMs)
-    renderer.setView(x, eye, z, game.player.yaw, game.player.pitch)
+    const arma = currentWeapon(game.aim)
+    const ads = game.aim.adsProgress
+    const velocidade = Math.min(
+      1,
+      Math.hypot(game.player.momentumX, game.player.momentumZ) / TERMINAL_SPEED.forwardRun,
+    )
+
+    renderer.updateEffects(deltaMs, {
+      swapProgress: swapProgress(game.aim),
+      velocidadeNormalizada: velocidade,
+      giroMouse: giroSuavizado,
+    })
+    renderer.setView(
+      x, eye, z,
+      game.player.yaw, game.player.pitch,
+      ads,
+      effectiveFov(arma, ads, FOV_HORIZONTAL_DEG),
+    )
     enemyRenderer.sync(game.enemies)
     renderer.render()
+
+    // A luneta so entra quando a mira esta quase fechada: aparecer no meio da
+    // transicao esconderia o mundo antes de o zoom compensar a perda de visao.
+    const comLuneta = arma.ads.scoped && ads > 0.72
+    scope.classList.toggle('on', comLuneta)
+    crosshair.style.opacity = comLuneta || ads > 0.5 ? '0' : '0.85'
+    renderer.viewModel.visivel = !comLuneta
 
     hud.update({
       health: game.player.health,

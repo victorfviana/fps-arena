@@ -9,8 +9,18 @@
 
 import { WEAPONS } from '../core/doom'
 import type { Random } from '../core/random'
+import { LOADOUT } from './loadout'
 
-export type WeaponId = keyof typeof WEAPONS
+/**
+ * Catalogo de disparo.
+ *
+ * Junta o que veio do source do DOOM (`WEAPONS`) com o arsenal de design
+ * (`LOADOUT`). A procedencia de cada numero continua registrada na origem; aqui
+ * so importa o que a maquina de estados precisa para contar tics.
+ */
+const CATALOG = { ...WEAPONS, ...LOADOUT }
+
+export type WeaponId = keyof typeof CATALOG
 
 export interface WeaponDefinition {
   cycleTics: number
@@ -45,7 +55,7 @@ export interface FireEvent {
 export function createWeapon(id: WeaponId, ammo = Infinity): WeaponState {
   return {
     id,
-    definition: WEAPONS[id],
+    definition: CATALOG[id],
     cooldownTics: 0,
     fuseTics: -1,
     ammo,
