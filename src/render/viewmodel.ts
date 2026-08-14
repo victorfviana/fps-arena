@@ -15,6 +15,7 @@
  */
 
 import {
+  AmbientLight,
   BoxGeometry,
   CapsuleGeometry,
   CylinderGeometry,
@@ -35,14 +36,22 @@ import type { LoadoutId } from '../weapons/loadout'
 /** Campo de visao vertical da camera do viewmodel, em graus. */
 const VIEW_FOV = 48
 
+/**
+ * Materiais do viewmodel.
+ *
+ * Bem mais claros que os equivalentes do mundo. A arma ocupa o canto da tela,
+ * sobre o chao que costuma ser claro, e metal escuro de verdade vira uma
+ * mancha preta sem forma nenhuma — foi o que aconteceu na primeira versao.
+ * Aqui o realismo do valor de cor perde para a leitura da silhueta.
+ */
 const MATERIAIS = {
-  metalEscuro: new MeshStandardMaterial({ color: 0x2b2d30, metalness: 0.92, roughness: 0.34 }),
-  metalGasto: new MeshStandardMaterial({ color: 0x4a4c50, metalness: 0.85, roughness: 0.52 }),
-  polimero: new MeshStandardMaterial({ color: 0x232527, metalness: 0.08, roughness: 0.78 }),
-  madeira: new MeshStandardMaterial({ color: 0x6b4423, metalness: 0.02, roughness: 0.66 }),
-  luva: new MeshStandardMaterial({ color: 0x33383d, metalness: 0.04, roughness: 0.88 }),
-  pele: new MeshStandardMaterial({ color: 0xa87355, metalness: 0.0, roughness: 0.85 }),
-  manga: new MeshStandardMaterial({ color: 0x3d4a3a, metalness: 0.02, roughness: 0.9 }),
+  metalEscuro: new MeshStandardMaterial({ color: 0x55585e, metalness: 0.88, roughness: 0.38 }),
+  metalGasto: new MeshStandardMaterial({ color: 0x7a7d84, metalness: 0.8, roughness: 0.5 }),
+  polimero: new MeshStandardMaterial({ color: 0x44474b, metalness: 0.1, roughness: 0.72 }),
+  madeira: new MeshStandardMaterial({ color: 0x8a5a2e, metalness: 0.02, roughness: 0.62 }),
+  luva: new MeshStandardMaterial({ color: 0x5a6068, metalness: 0.05, roughness: 0.85 }),
+  pele: new MeshStandardMaterial({ color: 0xc08a66, metalness: 0.0, roughness: 0.8 }),
+  manga: new MeshStandardMaterial({ color: 0x5d6b52, metalness: 0.02, roughness: 0.88 }),
   vidro: new MeshStandardMaterial({
     color: 0x0d1a26,
     metalness: 0.3,
@@ -322,13 +331,22 @@ export class ViewModel {
 
     // Luz propria: a cena do viewmodel nao recebe a iluminacao do mundo, e sem
     // isto as maos e a arma sairiam pretas.
-    this.luz = new PointLight(0xfff0dc, 2.6, 6, 1.4)
-    this.luz.position.set(0.35, 0.5, 0.6)
+    // Tres luzes, como numa mesa de fotografia: principal alta e a direita,
+    // preenchimento frio do lado oposto para abrir as sombras, e contraluz
+    // que desenha a borda superior e separa a arma do fundo.
+    this.scene.add(new AmbientLight(0xffffff, 1.5))
+
+    this.luz = new PointLight(0xfff2e2, 5.5, 8, 1.1)
+    this.luz.position.set(0.42, 0.55, 0.55)
     this.scene.add(this.luz)
 
-    const preenchimento = new PointLight(0x8fa8c8, 1.1, 6, 1.6)
-    preenchimento.position.set(-0.5, -0.2, 0.4)
+    const preenchimento = new PointLight(0x9dbbdd, 2.4, 8, 1.3)
+    preenchimento.position.set(-0.55, -0.15, 0.45)
     this.scene.add(preenchimento)
+
+    const contraluz = new PointLight(0xdce6f0, 2.0, 8, 1.3)
+    contraluz.position.set(-0.15, 0.7, -0.85)
+    this.scene.add(contraluz)
 
     this.mostrar('shotgun')
   }
@@ -374,9 +392,13 @@ export class ViewModel {
 
     // Quadril: arma deslocada para a direita e para baixo. Apontado: centrada
     // e trazida para tras, com a alca de mira na linha do olho.
-    const quadrilX = 0.135
-    const quadrilY = -0.115
-    const quadrilZ = -0.30
+    //
+    // A primeira versao usava valores maiores nos tres eixos e o conjunto saia
+    // pela borda inferior direita: aparecia so um pedaco de braco. Trazer para
+    // dentro e aproximar da camera resolve as duas coisas.
+    const quadrilX = 0.105
+    const quadrilY = -0.085
+    const quadrilZ = -0.34
     const alvoX = arma.alinhamentoAds.x
     const alvoY = arma.alinhamentoAds.y
     const alvoZ = -0.20

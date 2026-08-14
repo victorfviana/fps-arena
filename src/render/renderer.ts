@@ -152,10 +152,13 @@ export class Renderer {
    * antes de atmosfera.
    */
   private buildLights(arena: Arena): DirectionalLight {
-    this.scene.add(new AmbientLight(0x6e7280, 1.15))
-    this.scene.add(new HemisphereLight(0xa8b6d0, 0x50463c, 0.9))
+    // Neutro de proposito. As texturas ja sao quentes; somar luz quente por
+    // cima deixava a arena inteira avermelhada e apagava o contraste do imp,
+    // que e laranja, contra o fundo.
+    this.scene.add(new AmbientLight(0x7c8088, 1.35))
+    this.scene.add(new HemisphereLight(0xaebcd2, 0x4a4a4a, 1.0))
 
-    const sun = new DirectionalLight(0xffe8c8, 2.1)
+    const sun = new DirectionalLight(0xfff4e4, 2.0)
     sun.position.set(arena.size * 0.35, arena.wallHeight * 3.2, arena.size * 0.2)
     sun.castShadow = true
 
@@ -202,15 +205,23 @@ export class Renderer {
     ;(sala.material as MeshStandardMaterial).side = BackSide
     // A caixa envolvente usa uma repeticao propria: as paredes sao muito mais
     // largas que altas, e uma repeticao uniforme esticaria os blocos.
+    // Escala do bloco, e nao "um numero que parece bom": a textura traz 6
+    // fileiras por repeticao, entao repetir a cada 128 unidades da blocos de
+    // cerca de 21 unidades de altura. A 32 unidades por metro isso e um bloco
+    // de concreto de uns 65 cm — grande, coerente com a arquitetura da arena.
+    // A versao anterior repetia a cada 320 e produzia tijolos de dois metros.
+    const escalaBloco = 128
     for (const textura of [paredeMaps.map, paredeMaps.normalMap, paredeMaps.roughnessMap]) {
-      textura.repeat.set(arena.size / 320, arena.wallHeight / 320)
+      textura.repeat.set(arena.size / escalaBloco, arena.wallHeight / escalaBloco)
       textura.needsUpdate = true
     }
     sala.position.y = arena.wallHeight / 2
     sala.receiveShadow = true
     this.scene.add(sala)
 
-    const materialObstaculo = surfaceMaterial(createWallSurface(), 1, {
+    // Os obstaculos usam a mesma escala de bloco das paredes, senao pilar e
+    // parede parecem feitos de materiais de tamanhos diferentes.
+    const materialObstaculo = surfaceMaterial(createWallSurface(), 256 / escalaBloco, {
       metalness: 0.1,
       normalScale: 1.2,
     })
