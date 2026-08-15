@@ -12,8 +12,10 @@ critica adversarial e parada mensuravel.
    `docs/decisoes/0001-benchmark-doom.md`.
 2. **A unidade e o map unit do DOOM; a simulacao roda a 35 tics/s.** Nao
    converter para metros, nao acoplar fisica ao framerate.
-3. **Zero asset externo.** Texturas em canvas, audio sintetizado. Sem download,
-   sem licenca de terceiro no repositorio.
+3. **Asset externo so CC0, so em `public/models/`, cada arquivo com linha no
+   `CREDITS.md`** (conferido por `tests/creditos.test.ts`). Fora disso, tudo
+   continua procedural: texturas em canvas, audio sintetizado. A regra era
+   "zero asset externo" ate 14/08/2026 — ver `docs/decisoes/0003`.
 4. **Modulo de fisica nao importa Three.js.** `player/`, `world/collision.ts` e
    `core/` rodam sob teste sem navegador. Se um modulo de regra precisar do
    Three, a separacao esta errada.
