@@ -7,10 +7,10 @@ import { describe, expect, it } from 'vitest'
  * do CLAUDE.md do projeto em forma executavel: asset sem procedencia
  * registrada reprova a entrega.
  */
-const PASTAS_DE_ASSETS = ['models', 'sounds'] as const
+const PASTAS_DE_ASSETS = ['models', 'sounds', 'textures', 'env'] as const
 
 describe('rastreio de licenca de assets', () => {
-  it('todo arquivo de public/models/ e public/sounds/ tem linha no CREDITS.md', () => {
+  it('todo arquivo das pastas de assets tem linha no CREDITS.md', () => {
     const raiz = join(__dirname, '..')
     const creditos = readFileSync(join(raiz, 'CREDITS.md'), 'utf8')
     let total = 0
