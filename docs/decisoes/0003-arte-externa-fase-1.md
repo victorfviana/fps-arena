@@ -1,8 +1,9 @@
 # ADR 0003 — Arte externa, fase 1: modelos de inimigos
 
 Data: 2026-08-14
-Status: aceito (substitui a decisão "manter zero asset externo" do ADR 0002;
-o mapa de caminhos do ADR 0002 continua válido)
+Status: aceito; os MODELOS citados aqui (orc/demon) foram substituídos pelos
+humanos do ADR 0007 em 15/08 — a decisão estrutural (asset CC0 rastreado,
+fallback procedural) permanece
 
 ## Contexto
 

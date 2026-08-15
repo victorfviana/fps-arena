@@ -20,6 +20,7 @@ import { LOADOUT, effectiveFov } from './weapons/loadout'
 import { resetEnemyIds } from './enemies/enemy'
 import { carregarAmostrasDeTiro } from './audio/samples'
 import { carregarModelosInimigos } from './render/enemyModels'
+import { carregarProps } from './render/worldProps'
 import { carregarTexturasDeMundo } from './render/worldTextures'
 import { Input } from './core/input'
 import { FixedTimestepLoop } from './core/loop'
@@ -85,9 +86,11 @@ const modelosProntos = Promise.all([
   carregarModelosInimigos(),
   carregarAmostrasDeTiro(),
   carregarTexturasDeMundo(),
-]).then(([modelos, , texturas]) => {
+  carregarProps(),
+]).then(([modelos, , texturas, props]) => {
   if (modelos) enemyRenderer.usarModelos(modelos)
   if (texturas) renderer.usarTexturasDeMundo(texturas)
+  if (props) renderer.usarProps(props)
   startButton.disabled = false
   startButton.textContent = rotuloJogar
 })

@@ -30,6 +30,7 @@ import {
   salaDoPonto,
   type Arena,
   type Bounds,
+  type Box,
 } from '../src/world/arena'
 import { closestPointOnSegment, moveWithCollision, segmentBlocked } from '../src/world/collision'
 import {
@@ -405,6 +406,149 @@ describe('nascimentos desenhados', () => {
       const noMeio =
         box.height > SHOT_HEIGHT - BOB_AMPLITUDE && box.height < SHOT_HEIGHT + BOB_AMPLITUDE
       expect(noMeio).toBe(false)
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Cenario decorado
+// ---------------------------------------------------------------------------
+
+/** Distancia do ponto ate a SUPERFICIE da caixa; 0 quando esta dentro dela. */
+function distanciaAteBox(x: number, z: number, box: Box): number {
+  const foraX = Math.max(Math.abs(x - box.x) - box.width / 2, 0)
+  const foraZ = Math.max(Math.abs(z - box.z) - box.depth / 2, 0)
+  return Math.hypot(foraX, foraZ)
+}
+
+/** As duas caixas se sobrepoem no plano? */
+function seSobrepoem(a: Box, b: Box): boolean {
+  return (
+    Math.abs(a.x - b.x) < (a.width + b.width) / 2 &&
+    Math.abs(a.z - b.z) < (a.depth + b.depth) / 2
+  )
+}
+
+describe('cenario decorado', () => {
+  const VISUAIS_VALIDOS = ['caixa', 'barril', 'mureta', 'municao']
+
+  /**
+   * Meia largura do vao de uma porta (128) mais uma folga de meia celula.
+   *
+   * O corredor de travessia e o unico trecho do mundo em que o jogador nao pode
+   * ter de contornar nada: ele cruza correndo, de costas para a sala que acabou
+   * de limpar.
+   */
+  const MEIO_CORREDOR = 192
+
+  /** Ate onde, em Z, a regra do corredor vale para cada lado da porta. */
+  const ALCANCE_DO_CORREDOR = 320
+
+  it('declara so visuais conhecidos, e enfeita as tres salas', () => {
+    const arena = createArena()
+
+    for (const sala of arena.salas) {
+      const decorados = sala.boxes.filter((box) => box.visual !== undefined)
+      expect(decorados.length, sala.nome).toBeGreaterThan(0)
+
+      for (const box of decorados) {
+        expect(VISUAIS_VALIDOS, `${sala.nome} em (${box.x}, ${box.z})`).toContain(box.visual)
+      }
+    }
+  })
+
+  it('nao deixa nenhum objeto de cenario virar cobertura de IA', () => {
+    // `escolherCobertura` (enemies/enemy.ts) so aceita abrigo com altura acima
+    // da linha de tiro. Enquanto todo objeto decorado ficar abaixo dela, a
+    // busca de cobertura enxerga exatamente os mesmos volumes de antes — que e
+    // o que mantem a janela de sobrevivencia multi-semente valendo.
+    const arena = createArena()
+
+    for (const box of arena.boxes) {
+      if (box.visual === undefined) continue
+      expect(box.height, `objeto em (${box.x}, ${box.z})`).toBeLessThanOrEqual(SHOT_HEIGHT)
+    }
+  })
+
+  it('mantem todo objeto longe dos pontos de nascimento', () => {
+    // O teste de nascimentos ja cobre "nao esta DENTRO de obstaculo". Aqui a
+    // exigencia e maior: o corpo inteiro do inimigo tem de nascer solto, senao
+    // a resolucao de penetracao o expulsa no primeiro tic e ele parece pular.
+    //
+    // Vale so para o CENARIO. Os pilares do galpao nao entram porque a folga
+    // apertada de 17,4 unidades entre eles e os nascimentos diagonais e heranca
+    // medida e travada da arena calibrada (ver "nascimentos desenhados"); o que
+    // este teste protege e que nenhum objeto novo repita aquele aperto.
+    const arena = createArena()
+    let conferidos = 0
+
+    for (const sala of arena.salas) {
+      for (const ponto of sala.spawnPoints) {
+        for (const box of arena.boxes) {
+          if (box.visual === undefined) continue
+          conferidos++
+          expect(
+            distanciaAteBox(ponto.x, ponto.z, box),
+            `${sala.nome}/${ponto.nome} contra a caixa em (${box.x}, ${box.z})`,
+          ).toBeGreaterThan(ENEMIES.zombieman.radius * 2)
+        }
+      }
+    }
+
+    expect(conferidos).toBeGreaterThan(0)
+  })
+
+  it('deixa o corredor de travessia das portas inteiramente livre', () => {
+    const arena = createArena()
+
+    for (const porta of arena.portas) {
+      const zPorta = porta.z1
+
+      for (const box of arena.boxes) {
+        const noCorredor = Math.abs(box.x) - box.width / 2 < MEIO_CORREDOR
+        const naFrenteDaPorta = Math.abs(box.z - zPorta) < ALCANCE_DO_CORREDOR + box.depth / 2
+
+        expect(
+          noCorredor && naFrenteDaPorta,
+          `caixa em (${box.x}, ${box.z}) atravanca o vao da porta ${porta.id}`,
+        ).toBe(false)
+      }
+    }
+  })
+
+  it('nao empilha uma caixa dentro da outra', () => {
+    // Duas caixas sobrepostas dariam parede dupla na colisao e geometria
+    // dentro de geometria no render — o defeito classico de cenario montado
+    // a mao, e invisivel ate alguem esbarrar num canto que nao existe.
+    const arena = createArena()
+
+    for (let i = 0; i < arena.boxes.length; i++) {
+      for (let j = i + 1; j < arena.boxes.length; j++) {
+        const a = arena.boxes[i]!
+        const b = arena.boxes[j]!
+        expect(
+          seSobrepoem(a, b),
+          `(${a.x}, ${a.z}) ${a.width}x${a.depth} contra (${b.x}, ${b.z}) ${b.width}x${b.depth}`,
+        ).toBe(false)
+      }
+    }
+  })
+
+  it('mantem todo objeto dentro da sala a que pertence', () => {
+    const arena = createArena()
+
+    for (const sala of arena.salas) {
+      for (const box of sala.boxes) {
+        for (const [x, z] of [
+          [box.x - box.width / 2, box.z - box.depth / 2],
+          [box.x + box.width / 2, box.z + box.depth / 2],
+        ] as const) {
+          expect(
+            dentroDeBounds(sala.bounds, x, z),
+            `${sala.nome}: caixa em (${box.x}, ${box.z})`,
+          ).toBe(true)
+        }
+      }
     }
   })
 })

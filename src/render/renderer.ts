@@ -27,6 +27,7 @@ import {
   DirectionalLight,
   DoubleSide,
   Fog,
+  Group,
   HemisphereLight,
   LineBasicMaterial,
   LineSegments,
@@ -51,7 +52,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { FOV_HORIZONTAL_DEG, VIEW_HEIGHT } from '../core/doom'
 import type { EnemyShot, ShotTrace } from '../game'
 import type { LoadoutId } from '../weapons/loadout'
-import type { Arena, SalaId } from '../world/arena'
+import type { Arena, Box, SalaId } from '../world/arena'
 import {
   createCeilingSurface,
   createFloorSurface,
@@ -62,6 +63,7 @@ import {
 import { ParticleSystem } from './particles'
 import { QUALITY_PRESETS, QualityGovernor, type QualityLevel, type QualitySettings } from './quality'
 import { ViewModel } from './viewmodel'
+import type { PropsDeMundo, PropTemplate } from './worldProps'
 import type { ConjuntoTexturas, TexturasDeMundo } from './worldTextures'
 
 /** Quantos rastros de tiro cabem na tela ao mesmo tempo. */
@@ -241,6 +243,33 @@ const PROC_TILE_PAREDE = 128
 const PROC_TILE_PISO = 256
 const PROC_TILE_TETO = 256
 
+// --- Calibracao usada so quando usarProps() troca o bloco procedural pelos
+// objetos escaneados. Sem chamada, nenhuma destas constantes entra em jogo. ---
+
+/**
+ * Quantas fileiras de mureta o render aceita por caixa de colisao.
+ *
+ * A mureta e uma peca fisica de ~0,64 m de espessura, e algumas caixas baixas
+ * da arena tem 64 unidades de profundidade (~2 m): uma fileira so deixaria o
+ * jogador esbarrando 40 unidades antes de encostar na peca. Duas fileiras
+ * emendadas cobrem 40 dos 64 e resolvem a maior parte da divergencia; um teto
+ * maior encheria a cena de peças repetidas para ganhar centimetros.
+ */
+const MURETA_MAX_FILEIRAS = 2
+
+/**
+ * Giro base entre copias de um mesmo grupo, em radianos.
+ *
+ * Angulo de ouro: percorrer o circulo em passos deste tamanho nunca cai duas
+ * vezes seguidas no mesmo lugar, entao barris vizinhos nunca saem alinhados sem
+ * que nenhum sorteio entre em jogo. O indice do objeto e a unica entrada — dois
+ * carregamentos da mesma partida montam a cena identica.
+ */
+const PROP_GIRO_DOURADO = 2.399963
+
+/** Balanco maximo de uma peca que precisa continuar alinhada a caixa. */
+const PROP_JITTER = 0.05
+
 /** Espessura da chapa da porta, em map units. */
 const PORTA_ESPESSURA = 14
 
@@ -316,6 +345,16 @@ export class Renderer {
   private readonly materialTeto: MeshStandardMaterial
   private readonly materialParede: MeshStandardMaterial
   private readonly materialObstaculo: MeshStandardMaterial
+
+  /**
+   * Uma entrada por obstaculo da arena, na ordem de `arena.boxes`.
+   *
+   * Guardada porque `usarProps` chega DEPOIS que a arena ja foi montada (mesmo
+   * contrato de `usarTexturasDeMundo`) e precisa apagar o bloco procedural da
+   * caixa que ganhou modelo escaneado. A ordem estavel tambem e o que da a
+   * variacao deterministica de giro: o indice aqui e a semente do angulo.
+   */
+  private readonly obstaculos: Array<{ box: Box; mesh: Mesh }> = []
 
   private recoil = 0
   private flashTimer = 0
@@ -596,6 +635,158 @@ export class Renderer {
   }
 
   /**
+   * Troca o bloco procedural das caixas que declaram `visual` pelo objeto
+   * escaneado correspondente (engradado, barril, mureta, caixa de municao).
+   *
+   * Mesmo contrato de `usarTexturasDeMundo`: chamado uma UNICA vez pelo
+   * orquestrador, depois do portao de carregamento. Sem chamada, nada muda — os
+   * obstaculos continuam sendo as caixas texturizadas de sempre, e e por isso
+   * que este metodo pode existir sem nenhum caminho de fallback proprio.
+   *
+   * A falha e isolada por tipo: um template null (aquele modelo nao carregou)
+   * deixa so as caixas daquele tipo procedurais.
+   *
+   * Nada aqui toca a simulacao. A caixa de colisao continua sendo a mesma que
+   * `arena.boxes` declara; o modelo e assentado DENTRO dela, escalado pela
+   * altura. Os rodapes em world/arena.ts foram desenhados a partir das medidas
+   * reais destes arquivos exatamente para que "o que se ve" e "onde se esbarra"
+   * fiquem no mesmo lugar.
+   */
+  usarProps(p: PropsDeMundo): void {
+    // Os materiais dos templates chegam com envMapIntensity 1.0 de fabrica;
+    // o mundo inteiro roda com dose reduzida (ver TEXTURA_REAL_ENVMAP_*), e
+    // sem este alinhamento os objetos escaneados brilhariam acima do cenario.
+    for (const template of Object.values(p)) {
+      template?.raiz.traverse((o) => {
+        const material = (o as Mesh).material as MeshStandardMaterial | undefined
+        if (material?.isMeshStandardMaterial) {
+          material.envMapIntensity = TEXTURA_REAL_ENVMAP_DIELETRICO
+        }
+      })
+    }
+
+    for (let i = 0; i < this.obstaculos.length; i++) {
+      const { box, mesh } = this.obstaculos[i]!
+      if (!box.visual) continue
+
+      const template = p[box.visual]
+      if (!template) continue
+
+      this.scene.remove(mesh)
+      // A geometria e exclusiva desta caixa (uma BoxGeometry por obstaculo); o
+      // material e compartilhado por todos e continua em uso.
+      mesh.geometry.dispose()
+
+      this.scene.add(this.montarProp(box, template, i))
+    }
+  }
+
+  /**
+   * Monta o objeto de uma caixa: uma peca, ou uma fileira de pecas no caso da
+   * mureta.
+   *
+   * A mureta e o unico visual que se REPETE, e nao por capricho: e um modulo de
+   * estrada de 2 m, e esticar um unico exemplar por uma cobertura de 320
+   * unidades entregaria um objeto escaneado deformado — que e o oposto do que a
+   * etapa pediu. Os demais entram como peca unica, escalada pela altura da
+   * caixa, uniforme nos tres eixos.
+   *
+   * @param semente indice do obstaculo na arena. E a UNICA entrada da variacao
+   *   de giro: nenhum Math.random participa, entao dois carregamentos da mesma
+   *   arena montam a mesma cena, peca por peca.
+   */
+  private montarProp(box: Box, t: PropTemplate, semente: number): Group {
+    const escala = box.height / t.alturaOriginal
+    const comprimentoPeca = t.comprimentoOriginal * escala
+    const larguraPeca = t.larguraOriginal * escala
+
+    // Eixo longo da CAIXA: e nele que a peca deita.
+    const longoEmX = box.width >= box.depth
+    const comprimentoBox = longoEmX ? box.width : box.depth
+    const larguraBox = longoEmX ? box.depth : box.width
+
+    const repete = box.visual === 'mureta'
+    const colunas = repete ? Math.max(1, Math.round(comprimentoBox / comprimentoPeca)) : 1
+    const fileiras = repete
+      ? Math.min(MURETA_MAX_FILEIRAS, Math.max(1, Math.round(larguraBox / larguraPeca)))
+      : 1
+
+    const grupo = new Group()
+    grupo.position.set(box.x, 0, box.z)
+
+    // O modelo pode nascer comprido em X ou em Z (o de mureta nasce em X, e nem
+    // todo arquivo segue a mesma convencao). Este quarto de volta e o que alinha
+    // o lado maior DELE com o lado maior da caixa; sem ele, uma cobertura
+    // comprida em Z ganharia uma mureta atravessada, furando a propria colisao.
+    const alinhamento = !t.comprimentoEmZ === longoEmX ? 0 : Math.PI / 2
+
+    for (let coluna = 0; coluna < colunas; coluna++) {
+      for (let fileira = 0; fileira < fileiras; fileira++) {
+        const indice = semente * 7 + coluna * 3 + fileira
+        // Vao dividido igualmente: as pecas ficam distribuidas de ponta a ponta
+        // da caixa, e a sobra vira folga entre elas em vez de sobreposicao.
+        const aoLongo = (coluna - (colunas - 1) / 2) * (comprimentoBox / colunas)
+        const atravessado = (fileira - (fileiras - 1) / 2) * larguraPeca
+
+        const peca = this.clonarProp(t, escala)
+        peca.rotation.y = alinhamento + this.giroDoProp(box, indice)
+        peca.position.set(
+          longoEmX ? aoLongo : atravessado,
+          0,
+          longoEmX ? atravessado : aoLongo,
+        )
+        grupo.add(peca)
+      }
+    }
+
+    return grupo
+  }
+
+  /**
+   * Giro em Y de uma peca, deterministico pelo indice.
+   *
+   * Barril e cilindro: pode girar o quanto quiser sem sair do proprio rodape, e
+   * girar de verdade e o que impede tres barris vizinhos de lerem como o mesmo
+   * objeto copiado. Os demais tem rodape retangular e precisam continuar dentro
+   * da caixa de colisao, entao so ganham meia volta (que nao muda o rodape) mais
+   * um balanco pequeno o bastante para nao transbordar.
+   */
+  private giroDoProp(box: Box, indice: number): number {
+    if (box.visual === 'barril') return (indice * PROP_GIRO_DOURADO) % (Math.PI * 2)
+
+    const meiaVolta = indice % 2 === 0 ? 0 : Math.PI
+    const balanco = (((indice * 5) % 7) / 6 - 0.5) * 2 * PROP_JITTER
+    return meiaVolta + balanco
+  }
+
+  /**
+   * Um exemplar do modelo, escalado e assentado com a base no chao e o centro
+   * horizontal na origem do proprio suporte.
+   *
+   * O suporte existe para que o giro aconteca em torno do EIXO DA PECA. Girando
+   * o modelo direto, ele orbitaria a origem do arquivo — varios destes glTF
+   * nascem deslocados —, e a peca sairia de dentro da caixa de colisao.
+   *
+   * `clone(true)` compartilha geometria e material com o molde: cinquenta
+   * engradados custam a memoria de um.
+   */
+  private clonarProp(t: PropTemplate, escala: number): Group {
+    const suporte = new Group()
+
+    const modelo = t.raiz.clone(true)
+    modelo.scale.setScalar(escala)
+    modelo.position.set(-t.centroX * escala, -t.minY * escala, -t.centroZ * escala)
+    modelo.traverse((no) => {
+      // Mesmas sombras dos obstaculos que estas pecas substituem.
+      no.castShadow = true
+      no.receiveShadow = true
+    })
+
+    suporte.add(modelo)
+    return suporte
+  }
+
+  /**
    * Luz.
    *
    * Uma direcional com sombra da o volume — sem sombra projetada, pilar e
@@ -757,6 +948,7 @@ export class Renderer {
       mesh.castShadow = true
       mesh.receiveShadow = true
       this.scene.add(mesh)
+      this.obstaculos.push({ box, mesh })
     }
 
     this.buildPortas(arena, materialObstaculo)

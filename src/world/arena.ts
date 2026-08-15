@@ -43,6 +43,19 @@
 import { GRID_CELL } from '../core/doom'
 import type { Vec2, Wall } from './collision'
 
+/**
+ * Que objeto escaneado o render deve por no lugar da caixa procedural.
+ *
+ * Vive aqui, e nao no modulo de render, porque a FORMA do obstaculo e decisao
+ * de level design: o rodape de um barril e quadrado, o de uma mureta e comprido
+ * e estreito, e a caixa de colisao foi desenhada para caber no modelo (ver
+ * ALTURA_* e os construtores mais abaixo). O render so obedece.
+ *
+ * Ausente = a caixa texturizada de sempre. Nenhum consumidor da simulacao le
+ * este campo: colisao, visada e IA continuam vendo apenas x/z/width/depth/height.
+ */
+export type VisualDeBox = 'caixa' | 'barril' | 'mureta' | 'municao'
+
 /** Caixa alinhada aos eixos: pilar, bloco de cobertura ou parede grossa. */
 export interface Box {
   /** Centro no plano horizontal. */
@@ -52,6 +65,8 @@ export interface Box {
   width: number
   depth: number
   height: number
+  /** Objeto escaneado que substitui a caixa procedural no render. */
+  visual?: VisualDeBox
 }
 
 /** Retangulo alinhado aos eixos, em map units. */
@@ -219,6 +234,119 @@ function paredeComVao(z: number, minX: number, maxX: number): Wall[] {
   ]
 }
 
+// ---------------------------------------------------------------------------
+// Cenario: os objetos escaneados que enchem as salas
+//
+// Tres regras DURAS decidem toda altura daqui para baixo, e nenhuma delas e
+// gosto:
+//
+// 1. FAIXA PROIBIDA. Nenhum obstaculo pode ter altura dentro de
+//    (SHOT_HEIGHT - BOB_AMPLITUDE, SHOT_HEIGHT + BOB_AMPLITUDE) = (33, 49): no
+//    meio dessa faixa o balanco do passo faz a visada ora passar por cima ora
+//    bater, e o que o jogador ve deixa de casar com o que o tiro faz.
+//    Travado em tests/progressao.test.ts.
+// 2. TETO DOS BAIXOS. tests/rubrica.test.ts exige que toda parede com altura
+//    abaixo de 64 esteja abaixo da linha de visao (41). Somado a regra 1, so
+//    sobram duas faixas legais: ATE 33, ou 64 PARA CIMA.
+// 3. COBERTURA DE IA. `escolherCobertura` (enemies/enemy.ts, nao editado aqui)
+//    so considera abrigo o obstaculo com altura ACIMA de 41. Todo objeto novo
+//    deste arquivo fica em 33 ou menos, entao nenhum vira esconderijo novo e a
+//    janela de sobrevivencia multi-semente continua medindo o que media.
+//
+// DIVERGENCIA DECLARADA do enunciado da etapa, que pedia pilhas de 26 a 56 de
+// altura: 56 cai na faixa banida pela regra 2 (abaixo de 64 e acima de 41), e
+// qualquer valor acima de 41 criaria cobertura de IA nova — as duas coisas que
+// as regras acima proibem. As pilhas ficaram baixas, e o volume que elas dariam
+// veio do NUMERO de pecas por grupo, nao da altura de cada uma.
+//
+// Os rodapes nao sao arbitrarios: cada um e a sombra do modelo escaneado quando
+// ele e escalado ATE a altura declarada (o render escala pela altura, uniforme).
+// Medidos no proprio glTF COM as transformacoes de no aplicadas, em metros:
+//
+//   engradado militar (par de caixas)  1,815 x 0,301 x 0,979
+//   barril                             0,634 x 0,930 x 0,639
+//   mureta de concreto                 1,545 x 0,831 x 0,639
+//   caixa de municao                   0,087 x 0,177 x 0,258
+//
+// "Com as transformacoes aplicadas" nao e detalhe: o engradado tem uma tampa
+// aberta e girada, e ler so o AABB cru dos vertices dava 0,538 de profundidade
+// no lugar de 0,979 — quase a metade. A caixa de colisao desenhada por aquele
+// numero deixaria a tampa para fora dela, e o jogador atravessaria com o ombro
+// um pedaco de madeira que esta vendo.
+//
+// Sem esse cuidado o modelo transborda a caixa de colisao (o jogador esbarra no
+// nada) ou nada dentro dela (esbarra antes de encostar).
+// ---------------------------------------------------------------------------
+
+/**
+ * Pilha de engradados.
+ *
+ * O rodape do modelo e SEIS vezes a altura dele no lado maior, entao cada
+ * unidade de altura custa caro em chao ocupado: em 20 o grupo ja mede 121 x 65,
+ * o tamanho de um deposito de verdade. Subir para os 26 do primeiro rascunho
+ * levaria a 157 x 85 e a pilha viraria uma ilha no meio da sala.
+ */
+const ALTURA_CAIXA = 20
+const ALTURA_CAIXA_PEQUENA = 14
+/** Barril de 0,93 m: a 30 unidades ele sai na escala real do mundo (~32 u/m). */
+const ALTURA_BARRIL = 30
+/** Mureta de 0,83 m: 26 unidades tambem cai na escala real. */
+const ALTURA_MURETA = 26
+/** Caixa de municao pequena, para ler como detalhe e nao como obstaculo. */
+const ALTURA_MUNICAO = 14
+
+/**
+ * Passo entre muretas de uma fileira.
+ *
+ * A peca mede 48,3 na altura 26 (1,545/0,831 * 26). O passo e 50 para as pecas
+ * se sucederem com uma folga fina em vez de se atravessarem — o render
+ * distribui `comprimento / copias` e uma folga pequena e invisivel, enquanto
+ * sobreposicao aparece como concreto entrando em concreto.
+ */
+const MODULO_MURETA = 50
+
+/** Espessura da fileira de muretas novas, casada com o rodape do modelo. */
+const ESPESSURA_MURETA = 24
+
+type Eixo = 'x' | 'z'
+
+/** Caixa cujo lado maior corre no eixo pedido. */
+function deitada(x: number, z: number, eixo: Eixo, comprimento: number, largura: number,
+                 height: number, visual: VisualDeBox): Box {
+  return eixo === 'x'
+    ? { x, z, width: comprimento, depth: largura, height, visual }
+    : { x, z, width: largura, depth: comprimento, height, visual }
+}
+
+/**
+ * Grupo de engradados militares. `grande` e a pilha; o outro e a peca solta.
+ *
+ * 128 x 72 na altura 20 vem de 1,815 x 0,979 escalados por 20/0,301, com uns 6%
+ * de folga; 92 x 50 na altura 14, pela mesma conta.
+ */
+function caixa(x: number, z: number, eixo: Eixo, grande = true): Box {
+  return grande
+    ? deitada(x, z, eixo, 128, 72, ALTURA_CAIXA, 'caixa')
+    : deitada(x, z, eixo, 92, 50, ALTURA_CAIXA_PEQUENA, 'caixa')
+}
+
+/** 0,64 m de diametro na altura 30 da 20,6 unidades; 22 com a mesma folga. */
+function barril(x: number, z: number): Box {
+  return { x, z, width: 22, depth: 22, height: ALTURA_BARRIL, visual: 'barril' }
+}
+
+/** 0,258 m de lado maior na altura 14 da 20,4 unidades. */
+function municao(x: number, z: number): Box {
+  return { x, z, width: 22, depth: 22, height: ALTURA_MUNICAO, visual: 'municao' }
+}
+
+/** Fileira de `modulos` muretas emendadas, no eixo pedido. */
+function mureta(x: number, z: number, eixo: Eixo, modulos: number): Box {
+  return deitada(
+    x, z, eixo, MODULO_MURETA * modulos, ESPESSURA_MURETA, ALTURA_MURETA, 'mureta',
+  )
+}
+
 /**
  * Sala 1 — galpao (2048 x 2048), a arena publicada, intacta.
  *
@@ -238,10 +366,43 @@ function criarGalpao(wallHeight: number): Sala {
     // do olho de proposito — a 64 unidades eles escondiam o inimigo por
     // inteiro e, plantados entre o centro e os pontos de nascimento, faziam o
     // jogador no meio da arena nao conseguir acertar quase ninguem.
-    { x: 0, z: -GRID_CELL * 5, width: 320, depth: 64, height: 28 },
-    { x: 0, z: GRID_CELL * 5, width: 320, depth: 64, height: 28 },
-    { x: -GRID_CELL * 5, z: 0, width: 64, depth: 320, height: 28 },
-    { x: GRID_CELL * 5, z: 0, width: 64, depth: 320, height: 28 },
+    // As quatro ganharam `visual: 'mureta'`: mesma posicao, mesmo tamanho,
+    // mesma altura — o que muda e o que o olho ve no lugar do bloco de
+    // concreto procedural. Nenhum numero desta lista se moveu.
+    { x: 0, z: -GRID_CELL * 5, width: 320, depth: 64, height: 28, visual: 'mureta' },
+    { x: 0, z: GRID_CELL * 5, width: 320, depth: 64, height: 28, visual: 'mureta' },
+    { x: -GRID_CELL * 5, z: 0, width: 64, depth: 320, height: 28, visual: 'mureta' },
+    { x: GRID_CELL * 5, z: 0, width: 64, depth: 320, height: 28, visual: 'mureta' },
+
+    // Cenario encostado nas quatro paredes, nas DIAGONAIS INTERMEDIARIAS do
+    // anel de nascimento (22,5 graus + multiplos de 90). O lugar nao e estetico:
+    //
+    //  - o anel nasce a 832 do centro e a rota de cada inimigo e o RAIO dali ate
+    //    o jogador; tudo aqui esta a mais de 250 unidades de qualquer uma dessas
+    //    oito retas, entao ninguem tem o caminho desviado por decoracao;
+    //  - o ponto mais proximo de qualquer nascimento fica a 137 unidades — muito
+    //    alem do corpo de um inimigo (raio 20) e da folga de 16 que o teste
+    //    de nascimentos cobra;
+    //  - todos ficam abaixo de 33, entao nenhum vira cobertura de IA (regra 3
+    //    do bloco acima) e a pressao sobre o jogador parado nao muda.
+    //
+    // A janela de sobrevivencia multi-semente foi medida ANTES e DEPOIS desta
+    // lista, semente a semente, e continua dentro de 25-90 s.
+    caixa(904, 336, 'z'),
+    caixa(884, 452, 'x', false),
+    municao(848, 300),
+
+    barril(-352, 880),
+    barril(-378, 902),
+    barril(-330, 908),
+
+    mureta(-900, -352, 'z', 4),
+    municao(-856, -300),
+
+    caixa(336, -904, 'x'),
+    barril(452, -884),
+    barril(478, -906),
+    municao(300, -840),
   ]
 
   // Nascimentos nas quinas e no meio de cada parede, afastados do centro para
@@ -300,9 +461,34 @@ function criarCorredores(wallHeight: number): Sala {
     { x: trincheira, z: -1216, width: 64, depth: 320, height: wallHeight },
     { x: trincheira, z: -1856, width: 64, depth: 320, height: wallHeight },
     // Cobertura baixa nas laterais: barra o corpo de quem corre pelo flanco,
-    // sem esconder o inimigo de quem olha do corredor central.
-    { x: -688, z: -1408, width: 256, depth: 64, height: 28 },
-    { x: 688, z: -1408, width: 256, depth: 64, height: 28 },
+    // sem esconder o inimigo de quem olha do corredor central. Viraram mureta
+    // de concreto no visual, sem mudar um numero.
+    { x: -688, z: -1408, width: 256, depth: 64, height: 28, visual: 'mureta' },
+    { x: 688, z: -1408, width: 256, depth: 64, height: 28, visual: 'mureta' },
+
+    // Segunda linha de muretas, mais ao fundo dos corredores laterais: quem
+    // desce pelo flanco passa a ter DUAS paradas, e nao uma. Fora do vao das
+    // portas (o corredor de travessia e |x| <= 128; nada aqui entra em |x| <= 192).
+    mureta(-688, -1728, 'x', 4),
+    mureta(688, -1728, 'x', 4),
+
+    // Deposito encostado nas paredes laterais, na entrada da sala.
+    caixa(-856, -1280, 'z'),
+    caixa(-900, -1420, 'x', false),
+    municao(-820, -1500),
+    caixa(856, -1280, 'z'),
+    caixa(900, -1420, 'x', false),
+    municao(820, -1500),
+
+    // Barris nas beiras do corredor central, na altura do vao das trincheiras:
+    // enchem o olho no cruzamento sem estreitar a passagem (sobram 446 de
+    // largura livre no meio) e sem encostar no vao das portas.
+    barril(-256, -1520),
+    barril(-282, -1544),
+    barril(-234, -1550),
+    barril(256, -1520),
+    barril(282, -1544),
+    barril(234, -1550),
   ]
 
   const spawnPoints: SpawnPoint[] = [
@@ -345,16 +531,53 @@ function criarPatio(wallHeight: number): Sala {
   const half = 1280
 
   const boxes: Box[] = [
-    { x: -640, z: -2560, width: 256, depth: 64, height: 28 },
-    { x: 640, z: -2560, width: 256, depth: 64, height: 28 },
-    { x: 0, z: -2944, width: 64, depth: 256, height: 28 },
-    { x: -896, z: -3200, width: 64, depth: 256, height: 28 },
-    { x: 896, z: -3200, width: 64, depth: 256, height: 28 },
-    { x: -384, z: -3584, width: 256, depth: 64, height: 28 },
-    { x: 384, z: -3584, width: 256, depth: 64, height: 28 },
-    { x: 0, z: -3840, width: 320, depth: 64, height: 28 },
+    // As oito coberturas baixas do patio viraram muretas de concreto no visual.
+    // Todas sao compridas e baixas — a forma que o modelo de jersey barrier
+    // pede —, e nenhuma mudou de lugar nem de tamanho.
+    { x: -640, z: -2560, width: 256, depth: 64, height: 28, visual: 'mureta' },
+    { x: 640, z: -2560, width: 256, depth: 64, height: 28, visual: 'mureta' },
+    { x: 0, z: -2944, width: 64, depth: 256, height: 28, visual: 'mureta' },
+    { x: -896, z: -3200, width: 64, depth: 256, height: 28, visual: 'mureta' },
+    { x: 896, z: -3200, width: 64, depth: 256, height: 28, visual: 'mureta' },
+    { x: -384, z: -3584, width: 256, depth: 64, height: 28, visual: 'mureta' },
+    { x: 384, z: -3584, width: 256, depth: 64, height: 28, visual: 'mureta' },
+    { x: 0, z: -3840, width: 320, depth: 64, height: 28, visual: 'mureta' },
     { x: -1024, z: -2816, width: 128, depth: 128, height: wallHeight },
     { x: 1024, z: -2816, width: 128, depth: 128, height: wallHeight },
+
+    // Muretas novas: um par logo depois da porta 2 (recuado do vao, que ocupa
+    // |x| <= 128) e um par no meio do patio, dando parada a quem cruza o vazio
+    // entre as coberturas de origem.
+    mureta(-352, -2688, 'x', 4),
+    mureta(352, -2688, 'x', 4),
+    mureta(-704, -3392, 'z', 4),
+    mureta(704, -3392, 'z', 4),
+
+    // Deposito nas laterais da entrada, ao lado dos dois pilares altos.
+    caixa(-848, -2624, 'z'),
+    caixa(-880, -2760, 'x', false),
+    municao(-780, -2700),
+    caixa(848, -2624, 'z'),
+    caixa(880, -2760, 'x', false),
+    municao(780, -2700),
+
+    // Barris encostados nos pilares e nas muretas do meio.
+    barril(-1152, -2900),
+    barril(-1180, -2924),
+    barril(-1132, -2930),
+    barril(1152, -2900),
+    barril(1180, -2924),
+    barril(1132, -2930),
+    barril(-384, -3520),
+    barril(-412, -3496),
+    barril(384, -3520),
+    barril(412, -3496),
+
+    // Fundo do patio: engradados nos dois lados da ultima cobertura.
+    caixa(-272, -3776, 'x'),
+    caixa(272, -3776, 'x'),
+    municao(-224, -3700),
+    municao(224, -3700),
   ]
 
   const spawnPoints: SpawnPoint[] = [

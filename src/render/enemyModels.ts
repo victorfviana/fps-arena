@@ -1,10 +1,10 @@
 /**
- * Carregamento dos modelos gltf animados dos inimigos.
+ * Carregamento dos modelos glb animados dos inimigos.
  *
- * Os arquivos vem do pack Ultimate Monsters (Quaternius, CC0) — ver
- * docs/decisoes/0003-arte-externa-fase-1.md. Cada .gltf e autossuficiente
- * (buffer e textura embutidos), entao um GLTFLoader comum basta: nenhum
- * DRACOLoader nem KTX2Loader para registrar.
+ * Os arquivos vem do Zombie Apocalypse Kit (Quaternius, CC0) — ver
+ * CREDITS.md. Cada .glb e autossuficiente (buffer e textura embutidos), entao
+ * um GLTFLoader comum basta: nenhum DRACOLoader nem KTX2Loader para
+ * registrar (os arquivos nao usam extensionsUsed nenhuma).
  *
  * Falha em qualquer etapa (rede fora do ar, arquivo corrompido, parse) devolve
  * null em vez de propagar a excecao — quem chama cai no corpo procedural em
@@ -28,58 +28,76 @@ export interface EnemyModel {
 export interface EnemyModelSet {
   zombieman: EnemyModel
   imp: EnemyModel
-  /**
-   * Sargento de escopeta.
-   *
-   * MESMO arquivo do zombieman (orc.gltf), de proposito: o pack nao tem uma
-   * silhueta melhor para "guarda de farda", e inventar uma na marra custaria a
-   * fase de arte inteira. O que separa os dois na tela e o TINGIMENTO aplicado
-   * no build da view (ver TINTA_MODELO em enemyView.ts) — azul-ardosia escuro
-   * contra o verde do orc.
-   *
-   * Compartilhar o template e seguro porque nenhuma view usa o objeto
-   * diretamente: cada uma clona com SkeletonUtils e clona os materiais.
-   */
   sergeant: EnemyModel
 }
 
 /**
  * Caminho relativo: o vite serve public/ na raiz e o base do projeto e
- * relativo, entao 'models/orc.gltf' resolve certo tanto em dev quanto no
+ * relativo, entao 'models/atirador.glb' resolve certo tanto em dev quanto no
  * build publicado, sem depender de import.meta.url ou de barra inicial.
  *
- * Sao os ARQUIVOS, e nao os tipos de inimigo: dois tipos dividem o orc, e
- * baixar o mesmo gltf duas vezes so para dar um nome a cada um seria pagar
- * 1,2 MB de rede por nada.
+ * Um arquivo por tipo — sobrevivente armado (atirador), sargento (outro
+ * sobrevivente armado, mesmo kit) e o zumbi de bracos grandes (brutamontes).
+ * Ver CREDITS.md para a procedencia de cada um.
  */
 const CAMINHOS = {
-  orc: 'models/orc.gltf',
-  demon: 'models/demon.gltf',
+  zombieman: 'models/atirador.glb',
+  sergeant: 'models/sargento.glb',
+  imp: 'models/brutamontes.glb',
 } as const
 
 export async function carregarModelosInimigos(): Promise<EnemyModelSet | null> {
   try {
     const loader = new GLTFLoader()
-    const [orc, demon] = await Promise.all([
-      loader.loadAsync(CAMINHOS.orc),
-      loader.loadAsync(CAMINHOS.demon),
+    const [zombieman, sergeant, imp] = await Promise.all([
+      loader.loadAsync(CAMINHOS.zombieman),
+      loader.loadAsync(CAMINHOS.sergeant),
+      loader.loadAsync(CAMINHOS.imp),
     ])
 
+    // Os dois sobreviventes vem de fabrica com arma BRANCA na mao (meshes
+    // "Knife" e "Axe"), mas aqui eles sao atiradores em pose de pontaria
+    // (clipes _Gun): faca erguida durante a mira lia como defeito na tela.
+    // Mao vazia le melhor; anexar um rifle de verdade ao osso da mao fica
+    // como refinamento futuro. O Zombie_Arm do brutamontes FICA — e tematico.
+    for (const cena of [zombieman.scene, sergeant.scene]) {
+      cena.traverse((o) => {
+        if (o.name === 'Knife' || o.name === 'Axe') o.visible = false
+      })
+    }
+
     return {
-      zombieman: paraModelo(orc.scene, orc.animations),
-      imp: paraModelo(demon.scene, demon.animations),
-      sergeant: paraModelo(orc.scene, orc.animations),
+      zombieman: paraModelo(zombieman.scene, zombieman.animations),
+      sergeant: paraModelo(sergeant.scene, sergeant.animations),
+      imp: paraModelo(imp.scene, imp.animations),
     }
   } catch (erro) {
     console.warn(
-      'Falha ao carregar os modelos gltf dos inimigos; caindo para os corpos procedurais.',
+      'Falha ao carregar os modelos glb dos inimigos; caindo para os corpos procedurais.',
       erro,
     )
     return null
   }
 }
 
+/**
+ * Os clipes dentro destes glb saem do FBX2glTF com o nome da armature como
+ * prefixo ("CharacterArmature|Walk_Gun"), e o prefixo repete identico nos tres
+ * arquivos. Enxuga para o nome puro do clipe (Walk_Gun, Death, Run_Arms, ...)
+ * aqui, uma unica vez no carregamento, para o resto do codigo (enemyView.ts)
+ * indexar `actions` por esses nomes fixos sem se importar com o prefixo nem
+ * comparar strings inteiras por igualdade estrita.
+ */
+function nomeClipeSemPrefixo(nomeOriginal: string): string {
+  const indice = nomeOriginal.indexOf('|')
+  return indice === -1 ? nomeOriginal : nomeOriginal.slice(indice + 1)
+}
+
 function paraModelo(template: Group, animations: AnimationClip[]): EnemyModel {
+  for (const clip of animations) {
+    clip.name = nomeClipeSemPrefixo(clip.name)
+  }
+
   const caixa = new Box3().setFromObject(template)
   const alturaOriginal = caixa.max.y - caixa.min.y
   return { template, animations, alturaOriginal }

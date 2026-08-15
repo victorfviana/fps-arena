@@ -8,8 +8,8 @@
  * fallback que entra quando `usarModelos()` nunca e chamado, ou quando o
  * carregamento dos modelos gltf falha (ver enemyModels.ts).
  *
- * Com `usarModelos()`, cada view passa a clonar um modelo gltf animado (pack
- * Ultimate Monsters, CC0 — docs/decisoes/0003-arte-externa-fase-1.md) e tocar
+ * Com `usarModelos()`, cada view passa a clonar um modelo glb animado (Zombie
+ * Apocalypse Kit, Quaternius, CC0 — ver CREDITS.md) e tocar
  * os clipes do proprio arquivo via AnimationMixer, em vez de girar bracos e
  * pernas a mao. As duas trilhas coexistem nesta classe porque a troca precisa
  * ser indolor: se o fetch dos modelos falhar, o jogo nao pode quebrar, so
@@ -50,34 +50,11 @@ import type { EnemyModel, EnemyModelSet } from './enemyModels'
 const PALETTE: Record<EnemyKind, { body: number; head: number; limb: number }> = {
   zombieman: { body: 0x5f7048, head: 0x8a9668, limb: 0x4a5838 },
   imp: { body: 0xa8442a, head: 0xd4703c, limb: 0x8a3520 },
-  // Sargento: azul-ardosia, longe do verde do zumbi e do laranja do imp. E o
-  // minimo para o tipo novo existir na tela; o acabamento dele (modelo tingido,
-  // silhueta da escopeta) e da etapa C.
+  // Sargento: azul-ardosia, longe do verde do zumbi e do laranja do imp.
+  // Vale so para o corpo procedural (fallback quando o fetch do modelo
+  // falha) — o modelo gltf real (sargento.glb) e um arquivo proprio, com a
+  // cor-base do proprio atlas, sem tingimento (ver buildModel).
   sergeant: { body: 0x3e5670, head: 0x6a86a4, limb: 0x2f4257 },
-}
-
-/**
- * Tingimento base do MODELO gltf, por tipo. Ausente = o modelo entra como veio
- * do arquivo (zombieman e imp).
- *
- * Existe porque o sargento divide o orc.gltf com o zombieman (ver
- * EnemyModelSet): sem tinta, seriam dois bonecos verdes identicos, e a decisao
- * tatica "atirar primeiro em quem cospe tres chumbos" viraria adivinhacao. O
- * azul-ardosia escuro le como farda de guarda e se separa do verde do orc a
- * qualquer distancia, inclusive para quem nao distingue bem matizes — a
- * LUMINANCIA tambem cai, entao a diferenca sobrevive em silhueta.
- *
- * `corpo` MULTIPLICA a cor do material (o atlas do gltf vem com color branco,
- * entao o efeito e tingir a textura inteira). `emissivo` levanta um pouco as
- * sombras em azul, para o corpo escurecido nao virar mancha preta no fundo
- * escuro dos corredores.
- *
- * O tingimento por dano continua por cima: `aplicarCor` guarda ESTA cor como
- * base e interpola dela ate o branco, entao o flash de acerto e a palidez de
- * quem esta morrendo funcionam igual aos dos outros tipos.
- */
-const TINTA_MODELO: Partial<Record<EnemyKind, { corpo: number; emissivo: number }>> = {
-  sergeant: { corpo: 0x5a6b85, emissivo: 0x141c28 },
 }
 
 /** Cor do corpo no instante do dano. Vale para os dois caminhos. */
@@ -102,14 +79,32 @@ const STRIDE = 62
 const CROSSFADE_S = 0.15
 
 /**
- * Nome do clipe de ataque por tipo. Zombieman atira (Weapon); imp soca
- * (Punch) — condizente com a divergencia declarada em enemy.ts (BEHAVIOUR):
- * aqui o imp e corpo a corpo, sem bola de fogo.
+ * Nome do clipe de perseguicao (chase) por tipo — tocado em loop, com
+ * timeScale casado ao deslocamento real (ver tocarCaminhadaModelo).
+ *
+ * zombieman e sergeant andam de arma em punho: Walk_Gun e a mesma cadencia de
+ * passada do Walk simples, so que com a pose de pontaria ja embutida no
+ * clipe. O imp (brutamontes) corre com os bracos estendidos mesmo em chase —
+ * Run_Arms e a assinatura visual dele, entao ele nao tem um "andar", so o
+ * correr.
+ */
+const CLIPE_CAMINHADA: Record<EnemyKind, string> = {
+  zombieman: 'Walk_Gun',
+  sergeant: 'Walk_Gun',
+  imp: 'Run_Arms',
+}
+
+/**
+ * Nome do clipe de ataque por tipo. zombieman e sergeant param na pose de
+ * pontaria (Idle_Gun) durante ATTACK_POSE_TICS — o dano em si vem da arma do
+ * jogador, o clipe so precisa ler como "mirando parado". O imp soca (Punch) —
+ * condizente com a divergencia declarada em enemy.ts (BEHAVIOUR): aqui o imp
+ * e corpo a corpo, sem bola de fogo.
  */
 const CLIPE_ATAQUE: Record<EnemyKind, string> = {
-  zombieman: 'Weapon',
+  zombieman: 'Idle_Gun',
+  sergeant: 'Idle_Gun',
   imp: 'Punch',
-  sergeant: 'Weapon',
 }
 
 /** Partes exclusivas do corpo procedural (fallback). */
@@ -254,11 +249,12 @@ export class EnemyRenderer {
   }
 
   /**
-   * Caminhada do modelo: clipe Walk em loop, com timeScale calculado para a
-   * passada visual casar com o deslocamento real.
+   * Caminhada do modelo: clipe de perseguicao (CLIPE_CAMINHADA[kind]) em
+   * loop, com timeScale calculado para a passada visual casar com o
+   * deslocamento real.
    *
    * O inimigo anda a `chaseSpeed` map units por segundo (chaseSpeed() devolve
-   * por tic; perTicToPerSecond() converte). O clipe Walk, a timeScale=1, leva
+   * por tic; perTicToPerSecond() converte). O clipe, a timeScale=1, leva
    * `duracao` segundos para completar um ciclo de passada — nesse tempo, a
    * velocidade real do inimigo cobre `velocidade * duracao` map units.
    * timeScale escala o clipe para que esse ciclo dure exatamente STRIDE map
@@ -268,14 +264,15 @@ export class EnemyRenderer {
    *   timeScale = (velocidade * duracao) / STRIDE
    */
   private tocarCaminhadaModelo(visual: ModelVisual, enemy: Enemy): void {
-    const action = visual.actions['Walk']
+    const nomeClipe = CLIPE_CAMINHADA[enemy.kind]
+    const action = visual.actions[nomeClipe]
     if (!action) return
 
     const velocidade = perTicToPerSecond(chaseSpeed(ENEMIES[enemy.kind]))
     const duracao = action.getClip().duration
     action.timeScale = duracao > 0 ? (velocidade * duracao) / STRIDE : 1
 
-    if (visual.currentActionName === 'Walk') return
+    if (visual.currentActionName === nomeClipe) return
 
     action.reset()
     action.setLoop(LoopRepeat, Infinity)
@@ -285,7 +282,7 @@ export class EnemyRenderer {
     action.play()
 
     visual.currentAction = action
-    visual.currentActionName = 'Walk'
+    visual.currentActionName = nomeClipe
   }
 
   /**
@@ -608,7 +605,12 @@ export class EnemyRenderer {
     // do corpo procedural, aplicada aos materiais do gltf. Sem o clone aqui,
     // recolorir esta view mudaria a cor de toda instancia que compartilha o
     // mesmo material de origem.
-    const tinta = TINTA_MODELO[kind]
+    //
+    // Sem tingimento de tipo aqui: zombieman, sergeant e imp sao tres
+    // arquivos .glb distintos agora (ver enemyModels.ts), cada um com a
+    // cor-base propria do seu atlas — a cor capturada em baseColors e so o
+    // ponto de partida para aplicarCor() interpolar no flash de acerto e na
+    // dessaturacao de morte.
     const materials: Material[] = []
     const baseColors: Color[] = []
     clone.traverse((objeto) => {
@@ -624,14 +626,6 @@ export class EnemyRenderer {
         materials.push(material)
         const padrao = material as MeshStandardMaterial
         const cor = padrao.color as Color | undefined
-
-        // A tinta entra AQUI, no clone do material desta view — nunca no
-        // material de origem do gltf, que e compartilhado com o zombieman.
-        if (tinta && cor) {
-          cor.multiply(new Color(tinta.corpo))
-          if (padrao.emissive) padrao.emissive.set(tinta.emissivo)
-        }
-
         baseColors.push(cor ? cor.clone() : new Color(0xffffff))
       }
     })
