@@ -15,8 +15,10 @@
  */
 
 import {
+  AdditiveBlending,
   AmbientLight,
   BoxGeometry,
+  CanvasTexture,
   CapsuleGeometry,
   CylinderGeometry,
   Group,
@@ -164,10 +166,42 @@ export interface ArmaMontada {
   alinhamentoAds: { x: number; y: number; z: number }
 }
 
+/**
+ * Sprite radial do clarao, gerado uma vez. Sem textura, o plano era um
+ * QUADRADO chapado cor de creme — a 60 fps passa como um piscar, mas qualquer
+ * quadro congelado (ou monitor lento) mostrava a placa. Radial + aditivo le
+ * como luz, nao como objeto.
+ */
+let spriteClaraoCache: CanvasTexture | null = null
+
+function spriteClarao(): CanvasTexture {
+  if (spriteClaraoCache) return spriteClaraoCache
+  const canvas = document.createElement('canvas')
+  canvas.width = 128
+  canvas.height = 128
+  const ctx = canvas.getContext('2d')!
+  const g = ctx.createRadialGradient(64, 64, 0, 64, 64, 64)
+  g.addColorStop(0, 'rgba(255,244,214,1)')
+  g.addColorStop(0.25, 'rgba(255,208,138,0.9)')
+  g.addColorStop(0.6, 'rgba(255,150,60,0.35)')
+  g.addColorStop(1, 'rgba(255,120,40,0)')
+  ctx.fillStyle = g
+  ctx.fillRect(0, 0, 128, 128)
+  spriteClaraoCache = new CanvasTexture(canvas)
+  return spriteClaraoCache
+}
+
 function construirClarao(): Mesh {
   const clarao = new Mesh(
     new PlaneGeometry(0.34, 0.34),
-    new MeshBasicMaterial({ color: 0xffd08a, transparent: true, opacity: 0, fog: false }),
+    new MeshBasicMaterial({
+      map: spriteClarao(),
+      transparent: true,
+      opacity: 0,
+      blending: AdditiveBlending,
+      depthWrite: false,
+      fog: false,
+    }),
   )
   clarao.visible = false
   return clarao

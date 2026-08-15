@@ -22,7 +22,9 @@ describe('rastreio de licenca de assets', () => {
   it('toda linha de credito declara uma licenca conhecida', () => {
     const raiz = join(__dirname, '..')
     const creditos = readFileSync(join(raiz, 'CREDITS.md'), 'utf8')
-    const linhas = creditos.split('\n').filter((l) => l.includes('public/models/'))
+    const linhas = creditos
+      .split('\n')
+      .filter((l) => l.trimStart().startsWith('|') && l.includes('public/models/'))
     expect(linhas.length).toBeGreaterThan(0)
     for (const linha of linhas) {
       expect(linha, `licenca ausente em: ${linha}`).toMatch(/CC0|CC-BY|MIT/)

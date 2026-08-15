@@ -18,6 +18,7 @@ import {
 import { currentWeapon, swapProgress } from './weapons/aiming'
 import { LOADOUT, effectiveFov } from './weapons/loadout'
 import { resetEnemyIds } from './enemies/enemy'
+import { carregarModelosInimigos } from './render/enemyModels'
 import { Input } from './core/input'
 import { FixedTimestepLoop } from './core/loop'
 import { Game } from './game'
@@ -68,6 +69,19 @@ const sfx = new Sfx()
 // O navegador pode suspender o contexto de audio fora do fluxo de clique
 // (aba em segundo plano); sem isto o jogo ficaria mudo pelo resto da sessao.
 sfx.instalarAutoResume()
+
+// Os modelos dos inimigos chegam por rede. O botao de jogar espera por eles
+// (ou pela decisao de fallback) para nenhuma view nascer procedural e trocar
+// de formato no meio da partida. Falha de rede nao trava nada: o proprio
+// carregarModelosInimigos resolve com null e o jogo segue procedural.
+startButton.disabled = true
+const rotuloJogar = startButton.textContent
+startButton.textContent = 'carregando...'
+const modelosProntos = carregarModelosInimigos().then((modelos) => {
+  if (modelos) enemyRenderer.usarModelos(modelos)
+  startButton.disabled = false
+  startButton.textContent = rotuloJogar
+})
 
 /** Estado do tic anterior, para interpolar o desenho. */
 const previous = { x: game.player.x, z: game.player.z, eye: game.eyeY }
@@ -259,7 +273,7 @@ const loop = new FixedTimestepLoop({
       ads,
       effectiveFov(arma, ads, FOV_HORIZONTAL_DEG),
     )
-    enemyRenderer.sync(game.enemies)
+    enemyRenderer.sync(game.enemies, deltaMs)
 
     // A luneta so entra quando a mira esta quase fechada: aparecer no meio da
     // transicao esconderia o mundo antes de o zoom compensar a perda de visao.
@@ -374,7 +388,7 @@ function restart(): void {
   fps.worst = Infinity
   renderer.resetQualidade()
   hud.reset()
-  enemyRenderer.sync([])
+  enemyRenderer.sync([], 0)
   resetEnemyIds()
   passoAcumulado = 0
   passosInimigo.clear()
@@ -404,7 +418,7 @@ wirePointerLockOverlay(
 input.attach()
 loop.start()
 
-if (measurementMode) beginPlaying()
+if (measurementMode) void modelosProntos.then(beginPlaying)
 
 // Ponto de inspecao para a verificacao automatizada: o navegador headless le
 // estes valores em vez de depender de leitura de imagem.
