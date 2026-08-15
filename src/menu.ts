@@ -17,14 +17,17 @@ export interface MenuContext {
   /** O navegador concedeu o ponteiro? Consultado no DOM, nao em cache. */
   pointerLocked: boolean
   /** Fase atual da partida. */
-  phase: 'intermission' | 'fighting' | 'over'
+  phase: 'intermission' | 'fighting' | 'over' | 'won'
   /** Modo de medicao dispensa o ponteiro e nunca deve reexibir o menu. */
   measurementMode: boolean
 }
 
 export function shouldShowMenu(context: MenuContext): boolean {
-  // Fim de jogo tem tela propria; o menu de abertura nao entra por cima.
-  if (context.phase === 'over') return false
+  // Fim de jogo tem tela propria; o menu de abertura nao entra por cima. Vale
+  // igual para o fim feliz: a tela de vitoria e da etapa C, mas trazer o menu
+  // de abertura de volta por cima dela seria o mesmo defeito, so que ao
+  // contrario.
+  if (context.phase === 'over' || context.phase === 'won') return false
   if (context.measurementMode) return false
   return !context.pointerLocked
 }

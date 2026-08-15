@@ -1,10 +1,15 @@
 /**
- * Progressao de ondas.
+ * Progressao de ondas, agora POR SALA.
  *
  * Esta dimensao nao tem benchmark: o DOOM nao e um jogo de ondas, entao nao ha
  * numero para copiar. A curva abaixo e escolha de design, e por isso fica
  * fora do loop adversarial — o que da para verificar por teste e que ela
  * cresce sem saltos absurdos e que a pressao simultanea tem teto.
+ *
+ * A sala entra como VIES sobre a mesma curva, nao como tabela separada: a
+ * escalada continua sendo uma so (o numero da onda e global), e cada ambiente
+ * so inclina a mistura para o que a sua geometria pede. Sala 1 tem vies zero
+ * — a composicao dela e byte a byte a que foi calibrada e publicada.
  */
 
 import type { EnemyKind } from '../enemies/enemy'
@@ -17,23 +22,40 @@ export interface WaveComposition {
 /** Teto de inimigos vivos ao mesmo tempo. */
 export const MAX_CONCURRENT = 14
 
+/** Quantas ondas cada sala pede antes de ser considerada limpa. */
+export const WAVES_POR_SALA = 3
+
+/**
+ * Quanto a sala inclina a fatia de imps.
+ *
+ * Corredores: mais imps, porque a briga ali e curta e o flanco pelos
+ * corredores paralelos e a graca do ambiente. Patio: mais zombiemen, porque a
+ * linha de visao e longa e quem brilha ali e quem atira de longe.
+ */
+export const VIES_IMP_POR_SALA: Record<number, number> = {
+  1: 0,
+  2: 0.25,
+  3: -0.15,
+}
+
 /**
  * Quantos de cada tipo a onda traz.
  *
  * Cresce pouco a pouco, e a proporcao de imps sobe com o numero da onda: o
  * inicio ensina a mirar de longe, o meio obriga a recuar de quem chega perto.
  */
-export function waveComposition(wave: number): WaveComposition {
+export function waveComposition(wave: number, sala = 1): WaveComposition {
   const total = Math.min(4 + Math.floor(wave * 1.6), 26)
-  const impShare = Math.min(0.15 + wave * 0.06, 0.6)
+  const base = Math.min(0.15 + wave * 0.06, 0.6)
+  const impShare = Math.max(0, Math.min(0.85, base + (VIES_IMP_POR_SALA[sala] ?? 0)))
 
   const imp = Math.floor(total * impShare)
   return { zombieman: total - imp, imp }
 }
 
 /** A fila de nascimento da onda, ja embaralhada por tipo. */
-export function waveQueue(wave: number): EnemyKind[] {
-  const { zombieman, imp } = waveComposition(wave)
+export function waveQueue(wave: number, sala = 1): EnemyKind[] {
+  const { zombieman, imp } = waveComposition(wave, sala)
   const queue: EnemyKind[] = []
 
   // Intercala em vez de agrupar: uma onda que solta oito zumbis e depois oito

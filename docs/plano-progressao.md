@@ -49,7 +49,11 @@ legibilidade intactas, captura de tela por sala, publicação.
 ## Estado
 
 - [x] Plano aprovado e checkpoint
-- [ ] Etapa A: mundo multi-salas + portas + avanço + spawns desenhados
+- [x] Etapa A: mundo multi-salas + portas + avanço + spawns desenhados
+      (justaposição em -Z; porta = recompute de walls com mutação in-place;
+      viés de mistura por sala; contratos novos: GameEvents.doorOpened /
+      roomEntered / gameWon, Game.salaAtiva, Arena.salas/portas/boundsTotal.
+      Render AINDA desenha só o galpão — primeira tarefa da etapa C.)
 - [ ] Etapa B: IA (cobertura, flanco, sargento)
 - [ ] Etapa C: render de portas/salas + HUD
 - [ ] Calibração multi-semente por sala + captura + publicação

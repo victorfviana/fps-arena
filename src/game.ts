@@ -31,10 +31,18 @@ import {
 } from './weapons/aiming'
 import { effectiveMoveScale, effectiveSpread, type LoadoutId } from './weapons/loadout'
 import { hitscan } from './weapons/hitscan'
-import { createArena, type Arena } from './world/arena'
+import {
+  abrirPorta,
+  createArena,
+  portaDaSala,
+  salaDoPonto,
+  type Arena,
+  type SalaId,
+} from './world/arena'
 import {
   INTERMISSION_TICS,
   MAX_CONCURRENT,
+  WAVES_POR_SALA,
   spawnIntervalTics,
   waveQueue,
 } from './world/waves'
@@ -84,6 +92,18 @@ export interface GameEvents {
   playerDied: boolean
   /** Arma que entrou em cena neste tic, quando houve troca. */
   weaponSwapped: LoadoutId | null
+  /**
+   * Id da porta que abriu neste tic, quando a sala foi limpa.
+   *
+   * O desenho e o audio sao os unicos interessados: a regra ja tirou a porta
+   * das paredes no mesmo tic. E por aqui que a etapa C sobe a chapa metalica e
+   * toca o rangido.
+   */
+  doorOpened: number | null
+  /** Sala que passou a ser a ativa neste tic, quando o jogador cruzou o vao. */
+  roomEntered: SalaId | null
+  /** A ultima sala foi limpa. Fim feliz — a tela dele vem na etapa C. */
+  gameWon: boolean
 }
 
 const NO_EVENTS: GameEvents = {
@@ -98,6 +118,9 @@ const NO_EVENTS: GameEvents = {
   waveStarted: null,
   playerDied: false,
   weaponSwapped: null,
+  doorOpened: null,
+  roomEntered: null,
+  gameWon: false,
 }
 
 /** Como o jogador morreu, para a tela de fim explicar em vez de so contar. */
@@ -108,7 +131,7 @@ export interface DeathCause {
   melee: boolean
 }
 
-export type GamePhase = 'intermission' | 'fighting' | 'over'
+export type GamePhase = 'intermission' | 'fighting' | 'over' | 'won'
 
 export class Game {
   readonly arena: Arena
@@ -122,6 +145,15 @@ export class Game {
   wave = 0
   score = 0
   kills = 0
+
+  /**
+   * Sala em que a partida acontece agora.
+   *
+   * Publica porque o HUD ("sala X/3") e o render (luz e cor por ambiente) vao
+   * ler daqui na etapa C, e porque e o unico jeito de um teste conferir o
+   * avanco sem inspecionar campo privado.
+   */
+  salaAtiva: SalaId = 1
 
   /** Ultimo golpe recebido. Alimenta a tela de fim de jogo. */
   lastDamage: DeathCause | null = null
@@ -141,6 +173,17 @@ export class Game {
   private phaseTics = INTERMISSION_TICS
   private nextSpawnIndex = 0
   private readonly random: Random
+
+  /** Ondas ja fechadas na sala ativa. Zera a cada sala nova. */
+  private ondasNaSala = 0
+  /**
+   * Porta aberta, esperando o jogador atravessar.
+   *
+   * Enquanto isso nenhuma onda comeca: a sala seguinte so acorda quando ele
+   * entra nela. Sem esta trava, o intervalo entre ondas correria sozinho e a
+   * proxima onda nasceria na sala que o jogador ainda nao pisou.
+   */
+  private aguardandoTravessia = false
 
   constructor(seed = 0x1d1a) {
     this.arena = createArena()
@@ -182,7 +225,7 @@ export class Game {
   }
 
   tick(command: TicCommand): GameEvents {
-    if (this.phase === 'over') return NO_EVENTS
+    if (this.phase === 'over' || this.phase === 'won') return NO_EVENTS
 
     const events: GameEvents = {
       ...NO_EVENTS, traces: [], enemyShots: [], killPositions: [],
@@ -208,6 +251,7 @@ export class Game {
       escala === 1 ? command : { ...command, forward: command.forward * escala, side: command.side * escala },
       this.arena.walls,
     )
+    this.checarTravessia(events)
     this.advanceWave(events)
     this.fire(command, events)
     this.advanceEnemies(events)
@@ -223,12 +267,15 @@ export class Game {
   }
 
   private advanceWave(events: GameEvents): void {
+    // Porta aberta: a sala ativa ja acabou e a proxima ainda nao comecou.
+    if (this.aguardandoTravessia) return
+
     if (this.phase === 'intermission') {
       this.phaseTics--
       if (this.phaseTics > 0) return
 
       this.wave++
-      this.queue = waveQueue(this.wave)
+      this.queue = waveQueue(this.wave, this.salaAtiva)
       this.nextSpawnIndex = 0
       this.spawnCooldown = 0
       this.phase = 'fighting'
@@ -244,6 +291,8 @@ export class Game {
       // Sobreviver a onda inteira vale mais que a soma das mortes: e o que
       // transforma a partida numa escalada em vez de uma lista de abates.
       this.score += this.wave * 100
+      this.ondasNaSala++
+      if (this.ondasNaSala >= WAVES_POR_SALA) this.concluirSala(events)
       return
     }
 
@@ -262,13 +311,58 @@ export class Game {
   }
 
   /**
-   * Faz nascer um inimigo no ponto mais distante do jogador.
+   * A sala ativa acabou: abre a porta, ou declara a vitoria se nao houver mais.
+   *
+   * A porta sai das paredes NESTE tic — movimento e visada ja atravessam o vao
+   * antes de qualquer quadro ser desenhado. O evento existe para o desenho e o
+   * audio acompanharem, nunca para autorizarem.
+   */
+  private concluirSala(events: GameEvents): void {
+    const porta = portaDaSala(this.arena, this.salaAtiva)
+
+    if (!porta) {
+      this.phase = 'won'
+      events.gameWon = true
+      return
+    }
+
+    abrirPorta(this.arena, porta.id)
+    this.aguardandoTravessia = true
+    events.doorOpened = porta.id
+  }
+
+  /**
+   * O jogador cruzou o vao? Entao a sala seguinte acorda.
+   *
+   * A travessia e posicional de proposito: nao ha gatilho, botao nem volume de
+   * disparo. Estar do outro lado E o evento — o mesmo criterio que o jogador
+   * usa olhando para a tela.
+   */
+  private checarTravessia(events: GameEvents): void {
+    if (!this.aguardandoTravessia) return
+
+    const sala = salaDoPonto(this.arena, this.player.x, this.player.z)
+    if (sala === null || sala <= this.salaAtiva) return
+
+    this.salaAtiva = sala
+    this.ondasNaSala = 0
+    this.aguardandoTravessia = false
+    this.phase = 'intermission'
+    this.phaseTics = INTERMISSION_TICS
+    events.roomEntered = sala
+  }
+
+  /**
+   * Faz nascer um inimigo no ponto mais distante do jogador, entre os pontos
+   * DESENHADOS da sala ativa.
    *
    * Nascer perto e desleal de um jeito que o jogador nao consegue prever nem
-   * evitar — a morte parece bug, nao erro dele.
+   * evitar — a morte parece bug, nao erro dele. Os pontos nao sao sorteados no
+   * espaco livre: cada um foi posto olhando a geometria da sala (atras de
+   * cobertura, em pinca na entrada), e o acaso so escolhe ENTRE eles.
    */
   private spawn(kind: EnemyKind): void {
-    const points = this.arena.spawnPoints
+    const points = this.arena.salas[this.salaAtiva - 1]!.spawnPoints
     let best = points[0]!
     let bestDistance = -1
 
