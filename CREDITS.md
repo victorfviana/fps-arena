@@ -6,8 +6,13 @@ Rastreio por arquivo. Todo binário em `public/models/`, `public/sounds/`,
 
 | Arquivo | Origem | Autor | Licença | Obtido em |
 |---|---|---|---|---|
-| `public/models/demon.gltf` | Ultimate Monsters, glTF/Demon.gltf, cópia sem alteração (buffer e textura embutidos) | Quaternius — quaternius.com | CC0 1.0 (creativecommons.org/publicdomain/zero/1.0/) | 2026-08-14 |
-| `public/models/orc.gltf` | Ultimate Monsters, glTF/Orc.gltf, cópia sem alteração (buffer e textura embutidos) | Quaternius — quaternius.com | CC0 1.0 (creativecommons.org/publicdomain/zero/1.0/) | 2026-08-14 |
+| `public/models/atirador.glb` | Zombie Apocalypse Kit, sobrevivente armado, via poly.pizza/m/66kQ4dBBC7, cópia sem alteração | Quaternius — quaternius.com | CC0 1.0 | 2026-08-15 |
+| `public/models/sargento.glb` | Zombie Apocalypse Kit, sobrevivente armado, via poly.pizza/m/UcLErL2W37, cópia sem alteração | Quaternius — quaternius.com | CC0 1.0 | 2026-08-15 |
+| `public/models/brutamontes.glb` | Zombie Apocalypse Kit, zumbi de braços grandes, via poly.pizza/m/KaVJET0WHx, cópia sem alteração | Quaternius — quaternius.com | CC0 1.0 | 2026-08-15 |
+| `public/models/props/old_military_crate/` | Poly Haven, old_military_crate (polyhaven.com/a/old_military_crate), glTF 2K + texturas | ver polyhaven.com/a/old_military_crate | CC0 1.0 | 2026-08-15 |
+| `public/models/props/barrel_03/` | Poly Haven, barrel_03 (polyhaven.com/a/barrel_03), glTF 2K + texturas | ver polyhaven.com/a/barrel_03 | CC0 1.0 | 2026-08-15 |
+| `public/models/props/concrete_road_barrier/` | Poly Haven, concrete_road_barrier (polyhaven.com/a/concrete_road_barrier), glTF 2K + texturas | ver polyhaven.com/a/concrete_road_barrier | CC0 1.0 | 2026-08-15 |
+| `public/models/props/ammo_box/` | Poly Haven, ammo_box (polyhaven.com/a/ammo_box), glTF 2K + texturas | ver polyhaven.com/a/ammo_box | CC0 1.0 | 2026-08-15 |
 
 | `public/sounds/shotgun.wav` | Chaingun, pistol, rifle, shotgun shots (opengameart.org/content/chaingun-pistol-rifle-shotgun-shots), cópia sem alteração | Michel Baradari — apollo-music.de | CC-BY 3.0 (creativecommons.org/licenses/by/3.0/) | 2026-08-14 |
 | `public/sounds/rifle.wav` | Chaingun, pistol, rifle, shotgun shots (mesmo pack acima), cópia sem alteração | Michel Baradari — apollo-music.de | CC-BY 3.0 (creativecommons.org/licenses/by/3.0/) | 2026-08-14 |
