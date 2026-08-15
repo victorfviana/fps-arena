@@ -16,6 +16,7 @@
 
 import {
   ACESFilmicToneMapping,
+  AdditiveBlending,
   AmbientLight,
   BackSide,
   BoxGeometry,
@@ -23,6 +24,7 @@ import {
   BufferGeometry,
   CanvasTexture,
   Color,
+  CylinderGeometry,
   DirectionalLight,
   DoubleSide,
   Fog,
@@ -35,9 +37,11 @@ import {
   PCFSoftShadowMap,
   PerspectiveCamera,
   PlaneGeometry,
+  PMREMGenerator,
   PointLight,
   Scene,
   Vector2,
+  Vector3,
   WebGLRenderer,
 } from 'three'
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
@@ -59,6 +63,7 @@ import {
 import { ParticleSystem } from './particles'
 import { QUALITY_PRESETS, QualityGovernor, type QualityLevel, type QualitySettings } from './quality'
 import { ViewModel } from './viewmodel'
+import type { ConjuntoTexturas, TexturasDeMundo } from './worldTextures'
 
 /** Quantos rastros de tiro cabem na tela ao mesmo tempo. */
 const MAX_TRACES = 32
@@ -69,7 +74,147 @@ const MAX_DECALS = 12
 /** Quanto tempo um decal de impacto fica visivel antes de sumir, em ms. */
 const DECAL_VIDA_MS = 8000
 
+/**
+ * Quantos traçadores em volume (o cilindro que substitui a linha de 1px)
+ * cabem simultaneos. Um por disparo — rifle e escopeta usam o mesmo, a
+ * escopeta so aponta na direcao media dos 7 chumbos. 10 da folga para tiros
+ * em sequencia rapida sem reciclar um traçador ainda visivel.
+ */
+const MAX_TRACE_BEAMS = 10
+
+/** Raio do traçador em volume, em map units. */
+const TRACE_BEAM_RAIO = 0.45
+
+/**
+ * O feixe nasce este tanto A FRENTE da boca do cano, nao nela: um cilindro
+ * colado na camera vira uma cunha branca de meia tela (conferido em captura)
+ * — a espessura constante em world units explode em screen space no perto.
+ */
+const TRACE_BEAM_RECUO_INICIAL = 72
+
+/** Vida do traçador em volume, em ms — rapido o bastante para nao virar
+ *  rastro permanente, lento o bastante para o olho pegar a trajetoria. */
+const TRACE_BEAM_VIDA_MS = 130
+
+/** Opacidade inicial do traçador em volume. */
+const TRACE_BEAM_OPACIDADE = 0.85
+
+/** Cor quente quase-branca do traçador. Mantida abaixo do estouro do bloom
+ *  (limiar 0.92): nenhum canal chega a 1.0. */
+const TRACE_BEAM_COR = 0xffe6c4
+
+/**
+ * Opacidade-alvo das 7 linhas de chumbo da escopeta quando o traçador central
+ * assume o protagonismo — eram 0.7 (via traceTimer), agora contexto, nao
+ * historia principal. O rifle usa 0, a linha de 1px some e so o cilindro fala.
+ */
+// Zero: as 7 linhas de chumbo eram exatamente o "difuso" que o dono pediu
+// para tirar (e apareciam como fios verticais em quadro congelado). O feixe
+// central + o flash de impacto contam a historia; a dispersao REAL dos
+// chumbos continua na simulacao, so nao vira macarrao na tela.
+const TRACE_LINE_OPACIDADE_ESCOPETA = 0
+
+/** Fracao do comprimento original que cada linha de chumbo da escopeta
+ *  mantem — mais curta reforça que e contexto, nao o traçado principal. */
+const TRACE_LINE_ENCURTAMENTO_ESCOPETA = 0.55
+
+/** Quantos flashes de impacto cabem simultaneos — um por disparo. */
+const MAX_IMPACT_FLASHES = 10
+
+/** Tamanho do flash de impacto, em map units. */
+const IMPACT_FLASH_TAMANHO = 24
+
+/** Vida do flash de impacto, em ms — um pop curto, nao uma luz que persiste. */
+const IMPACT_FLASH_VIDA_MS = 90
+
+/** Opacidade inicial do flash de impacto. */
+const IMPACT_FLASH_OPACIDADE = 0.85
+
+/** Cor do flash quando o tiro bate em parede/caixa. */
+const IMPACT_FLASH_COR_PAREDE = 0xffc98a
+
+/** Cor do flash quando o tiro acerta inimigo — avermelhada, ecoa o sangue. */
+const IMPACT_FLASH_COR_ACERTO = 0xff5a42
+
+/** Quantidade de particulas de sangue por chumbo que acerta o inimigo. Antes
+ *  era 5 — mais encorpado deixa o acerto mais visivel no meio do combate. */
+const SANGUE_QTD_POR_ACERTO = 9
+
 const COR_NEBLINA = 0x2a2620
+
+// --- Calibracao usada so quando usarTexturasDeMundo() troca o procedural
+// pelas texturas reais do Poly Haven (ver ADR 0005). Sem chamada, nenhuma
+// destas constantes entra em jogo. ---
+
+/**
+ * Normal scale para os normal maps reais (nor_gl do Poly Haven). Eles ja sao
+ * calibrados — a escala 1.0 padrao do three.js da o relevo correto. Os
+ * valores antigos passados a surfaceMaterial (1.1 a 1.4) compensavam o
+ * heightToNormal procedural, que e mais fraco; reaplica-los aqui exageraria o
+ * relevo das texturas reais.
+ */
+const TEXTURA_REAL_NORMAL_SCALE = 1.0
+
+// Metalness recalibrado por material real, e nao mais pela luminancia do
+// ruido procedural (que so aproximava "parece metal"/"parece concreto").
+// Tijolo e concreto sao dieletricos, perto de 0; a chapa metalica do
+// teto/obstaculos e metal de verdade.
+const TEXTURA_REAL_METALNESS_PAREDE = 0.05
+const TEXTURA_REAL_METALNESS_PISO = 0.05
+const TEXTURA_REAL_METALNESS_METAL = 0.75
+
+/**
+ * O HDRI vira luz ambiente (via scene.environment) por cima da AmbientLight e
+ * da HemisphereLight ja calibradas para a cena 100% procedural — sem reduzir
+ * as duas, a arena sai mais clara do que o combate foi balanceado. Fator
+ * empirico, nao fisico: so evita a dupla contagem de luz ambiente.
+ */
+const HDRI_REDUCAO_LUZ_AMBIENTE = 0.45
+
+/**
+ * As luzes foram calibradas para as albedos ESCURAS do procedural; as fotos
+ * reais (tijolo areia, concreto claro) refletem muito mais e a mesma luz
+ * lavava a cena inteira — conferido em captura. Sol tambem cai quando as
+ * texturas reais entram.
+ */
+const SOL_REDUCAO_TEXTURA_REAL = 0.7
+
+/**
+ * Dose do environment POR MATERIAL. O scene.environmentIntensity global se
+ * mostrou inerte nesta versao (conferido por A/B ao vivo: env inteiro ligado
+ * lavava a cena com o valor 0.32 setado; anulado, a cena voltava ao humor
+ * certo). O envMapIntensity de MeshStandardMaterial e a alavanca que o
+ * renderer respeita de fato. Dieletricos quase nao refletem; o metal precisa
+ * do reflexo para nao virar breu.
+ */
+const TEXTURA_REAL_ENVMAP_DIELETRICO = 0.3
+const TEXTURA_REAL_ENVMAP_METAL = 0.6
+
+/**
+ * Quanto do HDRI entra como luz/reflexo. Em 1.0 a oficina abandonada (quente
+ * e clara) lavava a arena inteira num tom laranja estourado — conferido em
+ * captura de tela, nao em suposicao. O ambiente e tempero, nao sol.
+ */
+const HDRI_INTENSIDADE = 0.32
+
+/**
+ * Lado do ladrilho de cada textura real, em map units (24,4u ~ 1 m).
+ *
+ * O repeat NAO e herdado do procedural: la um "bloco" de 128u carregava um
+ * padrao desenhado para isso; a foto 2K do Poly Haven cobre ~2 m fisicos, e
+ * herdad o repeat antigo esticava tijolo em 5 m e concreto em 10 m — o piso
+ * parecia tabua corrida (conferido em captura). Valores um pouco acima do
+ * fisico (2,6 m) para o tiling nao serrilhar de longe.
+ */
+const TILE_PAREDE = 64
+const TILE_PISO = 64
+const TILE_TETO = 96
+const TILE_OBSTACULO = 64
+
+// Auxiliares estaticos do modulo para orientar o traçador em volume sem
+// alocar Vector3 novo a cada disparo — regra de zero alocacao por tiro.
+const EIXO_Y_AUX = new Vector3(0, 1, 0)
+const direcaoTraceBeamAux = new Vector3()
 
 export class Renderer {
   readonly scene = new Scene()
@@ -82,7 +227,17 @@ export class Renderer {
   private readonly playerLight: PointLight
   private readonly muzzleLight: PointLight
   private readonly sun: DirectionalLight
+  private readonly ambientLight: AmbientLight
+  private readonly hemiLight: HemisphereLight
   private readonly governor: QualityGovernor
+
+  // Materiais existentes de cada superficie da arena — guardados para
+  // usarTexturasDeMundo() poder trocar map/normalMap/roughnessMap depois que
+  // a arena ja foi montada, sem duplicar a montagem.
+  private readonly materialChao: MeshStandardMaterial
+  private readonly materialTeto: MeshStandardMaterial
+  private readonly materialParede: MeshStandardMaterial
+  private readonly materialObstaculo: MeshStandardMaterial
 
   private recoil = 0
   private flashTimer = 0
@@ -90,9 +245,26 @@ export class Renderer {
   private readonly decalPool: Array<{ mesh: Mesh; material: MeshBasicMaterial; vidaMs: number }> = []
   private proximoDecal = 0
 
+  private readonly traceBeamPool: Array<{
+    mesh: Mesh
+    material: MeshBasicMaterial
+    vidaMs: number
+  }> = []
+  private proximoTraceBeam = 0
+
+  private readonly impactFlashPool: Array<{
+    mesh: Mesh
+    material: MeshBasicMaterial
+    vidaMs: number
+  }> = []
+  private proximoImpactFlash = 0
+
   private readonly traceLines: LineSegments
   private readonly tracePositions = new Float32Array(MAX_TRACES * 6)
   private traceTimer = 0
+  /** Opacidade-alvo das linhas finas de chumbo neste disparo — 0 no rifle
+   *  (o cilindro conta a historia sozinho), fraca na escopeta (contexto). */
+  private traceLineOpacidadeAlvo = 0
 
   private readonly enemyTraceLines: LineSegments
   private readonly enemyTracePositions = new Float32Array(MAX_TRACES * 6)
@@ -104,7 +276,13 @@ export class Renderer {
   private readonly inclinacao = { x: 0, y: 0 }
   private balanco = 0
 
+  /** Dimensoes da arena, para calcular o repeat das texturas reais. */
+  private readonly arenaSize: number
+  private readonly arenaWallHeight: number
+
   constructor(private readonly canvas: HTMLCanvasElement, arena: Arena) {
+    this.arenaSize = arena.size
+    this.arenaWallHeight = arena.wallHeight
     this.renderer = new WebGLRenderer({
       canvas,
       antialias: true,
@@ -132,8 +310,16 @@ export class Renderer {
     // dele: a neblina nunca tinha efeito visual, so existia no codigo.
     this.scene.fog = new Fog(COR_NEBLINA, arena.size * 0.35, arena.size * 1.05)
 
-    this.sun = this.buildLights(arena)
-    this.buildArena(arena)
+    const lights = this.buildLights(arena)
+    this.sun = lights.sun
+    this.ambientLight = lights.ambientLight
+    this.hemiLight = lights.hemiLight
+
+    const materiaisArena = this.buildArena(arena)
+    this.materialChao = materiaisArena.chao
+    this.materialTeto = materiaisArena.teto
+    this.materialParede = materiaisArena.parede
+    this.materialObstaculo = materiaisArena.obstaculo
 
     // Quase branca: qualquer tom quente aqui e multiplicado pelas texturas,
     // que ja sao quentes, e o resultado tinge a arena inteira de vermelho.
@@ -151,6 +337,8 @@ export class Renderer {
     this.enemyTraceLines = this.buildTraces(0xff5a3c, this.enemyTracePositions)
     this.particles = new ParticleSystem(this.scene)
     this.buildDecals()
+    this.buildTraceBeams()
+    this.buildImpactFlashes()
 
     this.composer = new EffectComposer(this.renderer)
     this.composer.addPass(new RenderPass(this.scene, this.camera))
@@ -180,6 +368,116 @@ export class Renderer {
   }
 
   /**
+   * Troca os mapas procedurais pelas texturas PBR reais (ver ADR 0005) e liga
+   * o HDRI como environment map. Chamado uma UNICA vez pelo orquestrador
+   * (main.ts), depois do portao de carregamento e antes da primeira partida.
+   *
+   * Sem chamada, nada muda: o fallback procedural continua integral, porque
+   * os materiais ja nascem funcionais no construtor.
+   *
+   * Falha e isolada por superficie: um conjunto null (a textura daquela
+   * superficie nao carregou) so deixa aquela superficie procedural — as
+   * outras trocam normalmente.
+   */
+  usarTexturasDeMundo(t: TexturasDeMundo): void {
+    // So os diffs de piso e parede pedem anisotropia: sao as duas superficies
+    // vistas em angulo raso (chao aos pes, parede de raspao ao correr), onde
+    // a textura borra sem ela. Teto e obstaculos sao vistos de frente ou de
+    // longe, o custo extra nao se paga.
+    const aniso = Math.min(8, this.renderer.capabilities.getMaxAnisotropy())
+
+    const lado = this.arenaSize
+    const algumConjunto = Boolean(t.piso || t.parede || t.teto)
+    if (algumConjunto) this.sun.intensity *= SOL_REDUCAO_TEXTURA_REAL
+    if (t.piso) {
+      this.trocarConjunto(this.materialChao, t.piso, TEXTURA_REAL_METALNESS_PISO, aniso, true,
+        lado / TILE_PISO, lado / TILE_PISO)
+    }
+    if (t.parede) {
+      this.trocarConjunto(this.materialParede, t.parede, TEXTURA_REAL_METALNESS_PAREDE, aniso, true,
+        lado / TILE_PAREDE, this.arenaWallHeight / TILE_PAREDE)
+    }
+    if (t.teto) {
+      // Teto e obstaculos usam o mesmo conjunto metal_plate (ver mapeamento
+      // do ADR 0005) — dois materiais distintos, dois clones, cada um com o
+      // ladrilho proprio.
+      this.trocarConjunto(this.materialTeto, t.teto, TEXTURA_REAL_METALNESS_METAL, aniso, false,
+        lado / TILE_TETO, lado / TILE_TETO)
+      this.trocarConjunto(this.materialObstaculo, t.teto, TEXTURA_REAL_METALNESS_METAL, aniso, false,
+        256 / TILE_OBSTACULO, 256 / TILE_OBSTACULO)
+    }
+
+    if (t.hdri) {
+      const pmrem = new PMREMGenerator(this.renderer)
+      this.scene.environment = pmrem.fromEquirectangular(t.hdri).texture
+      this.scene.environmentIntensity = HDRI_INTENSIDADE
+      pmrem.dispose()
+      // A textura equirretangular crua ja foi convertida para o cubemap
+      // filtrado que o PMREMGenerator gerou; nao serve mais para nada.
+      t.hdri.dispose()
+
+      this.ambientLight.intensity *= HDRI_REDUCAO_LUZ_AMBIENTE
+      this.hemiLight.intensity *= HDRI_REDUCAO_LUZ_AMBIENTE
+    }
+  }
+
+  /**
+   * Troca map/normalMap/roughnessMap de UM material existente pelos mapas
+   * reais, clonando as texturas do conjunto — o mesmo motivo do clone que ja
+   * existia entre parede e obstaculo com os mapas procedurais: cada material
+   * tem seu proprio repeat, entao nao da para compartilhar a textura entre
+   * dois materiais sem um pisar no repeat do outro.
+   *
+   * O repeat e copiado do mapa procedural que esta saindo — e ele quem sabe
+   * quantas vezes essa superficie especifica repete a textura, calculado a
+   * partir do tamanho da arena em buildArena().
+   */
+  private trocarConjunto(
+    material: MeshStandardMaterial,
+    conjunto: ConjuntoTexturas,
+    metalness: number,
+    aniso: number,
+    aplicarAniso: boolean,
+    repeatX: number,
+    repeatY: number,
+  ): void {
+    const mapaAntigo = material.map
+    const normalAntigo = material.normalMap
+    const roughAntigo = material.roughnessMap
+
+    const diff = conjunto.diff.clone()
+    const normal = conjunto.normal.clone()
+    const rough = conjunto.rough.clone()
+
+    // Repeat calculado pelo ladrilho FISICO da textura real (ver TILE_*), e
+    // nao herdado do procedural — os dois sistemas medem coisas diferentes.
+    diff.repeat.set(repeatX, repeatY)
+    normal.repeat.set(repeatX, repeatY)
+    rough.repeat.set(repeatX, repeatY)
+
+    if (aplicarAniso) diff.anisotropy = aniso
+
+    diff.needsUpdate = true
+    normal.needsUpdate = true
+    rough.needsUpdate = true
+
+    material.map = diff
+    material.normalMap = normal
+    material.roughnessMap = rough
+    material.metalness = metalness
+    material.envMapIntensity =
+      metalness > 0.5 ? TEXTURA_REAL_ENVMAP_METAL : TEXTURA_REAL_ENVMAP_DIELETRICO
+    material.normalScale.setScalar(TEXTURA_REAL_NORMAL_SCALE)
+    material.needsUpdate = true
+
+    // Os mapas procedurais saindo nao servem mais para nada — cada um e uma
+    // CanvasTexture unica deste material, nunca compartilhada.
+    mapaAntigo?.dispose()
+    normalAntigo?.dispose()
+    roughAntigo?.dispose()
+  }
+
+  /**
    * Luz.
    *
    * Uma direcional com sombra da o volume — sem sombra projetada, pilar e
@@ -187,12 +485,18 @@ export class Renderer {
    * garantem que nada fique preto de vez, porque legibilidade do combate vem
    * antes de atmosfera.
    */
-  private buildLights(arena: Arena): DirectionalLight {
+  private buildLights(arena: Arena): {
+    sun: DirectionalLight
+    ambientLight: AmbientLight
+    hemiLight: HemisphereLight
+  } {
     // Neutro de proposito. As texturas ja sao quentes; somar luz quente por
     // cima deixava a arena inteira avermelhada e apagava o contraste do imp,
     // que e laranja, contra o fundo.
-    this.scene.add(new AmbientLight(0x7c8088, 1.35))
-    this.scene.add(new HemisphereLight(0xaebcd2, 0x4a4a4a, 1.0))
+    const ambientLight = new AmbientLight(0x7c8088, 1.35)
+    const hemiLight = new HemisphereLight(0xaebcd2, 0x4a4a4a, 1.0)
+    this.scene.add(ambientLight)
+    this.scene.add(hemiLight)
 
     const sun = new DirectionalLight(0xfff4e4, 2.0)
     sun.position.set(arena.size * 0.35, arena.wallHeight * 3.2, arena.size * 0.2)
@@ -211,34 +515,33 @@ export class Renderer {
 
     this.scene.add(sun)
     this.scene.add(sun.target)
-    return sun
+    return { sun, ambientLight, hemiLight }
   }
 
-  private buildArena(arena: Arena): void {
+  private buildArena(arena: Arena): {
+    chao: MeshStandardMaterial
+    teto: MeshStandardMaterial
+    parede: MeshStandardMaterial
+    obstaculo: MeshStandardMaterial
+  } {
     const tiles = arena.size / 256
 
-    const chao = new Mesh(
-      new PlaneGeometry(arena.size, arena.size),
-      surfaceMaterial(createFloorSurface(), tiles, { metalness: 0.35, normalScale: 1.1 }),
-    )
+    const materialChao = surfaceMaterial(createFloorSurface(), tiles, { metalness: 0.35, normalScale: 1.1 })
+    const chao = new Mesh(new PlaneGeometry(arena.size, arena.size), materialChao)
     chao.rotation.x = -Math.PI / 2
     chao.receiveShadow = true
     this.scene.add(chao)
 
-    const teto = new Mesh(
-      new PlaneGeometry(arena.size, arena.size),
-      surfaceMaterial(createCeilingSurface(), tiles, { metalness: 0.05 }),
-    )
+    const materialTeto = surfaceMaterial(createCeilingSurface(), tiles, { metalness: 0.05 })
+    const teto = new Mesh(new PlaneGeometry(arena.size, arena.size), materialTeto)
     teto.rotation.x = Math.PI / 2
     teto.position.y = arena.wallHeight
     this.scene.add(teto)
 
     const paredeMaps = createWallSurface()
-    const sala = new Mesh(
-      new BoxGeometry(arena.size, arena.wallHeight, arena.size),
-      surfaceMaterial(paredeMaps, 1, { metalness: 0.06, normalScale: 1.4 }),
-    )
-    ;(sala.material as MeshStandardMaterial).side = BackSide
+    const materialParede = surfaceMaterial(paredeMaps, 1, { metalness: 0.06, normalScale: 1.4 })
+    const sala = new Mesh(new BoxGeometry(arena.size, arena.wallHeight, arena.size), materialParede)
+    materialParede.side = BackSide
     // A caixa envolvente usa uma repeticao propria: as paredes sao muito mais
     // largas que altas, e uma repeticao uniforme esticaria os blocos.
     // Escala do bloco, e nao "um numero que parece bom": a textura traz 6
@@ -280,6 +583,8 @@ export class Renderer {
       mesh.receiveShadow = true
       this.scene.add(mesh)
     }
+
+    return { chao: materialChao, teto: materialTeto, parede: materialParede, obstaculo: materialObstaculo }
   }
 
   private buildTraces(color: number, positions: Float32Array): LineSegments {
@@ -358,6 +663,160 @@ export class Renderer {
     slot.vidaMs = DECAL_VIDA_MS
   }
 
+  /**
+   * Deposito do traçador em volume: um cilindro fino por slot, reaproveitado
+   * em anel — mesmo raciocinio do deposito de decais e do de particulas.
+   * Geometria unica compartilhada entre os slots; cada um so muda posicao,
+   * orientacao e escala, nunca aloca malha nova por tiro.
+   */
+  private buildTraceBeams(): void {
+    // Poucos segmentos radiais: visto quase sempre de raspao, no meio do
+    // combate ninguem nota a diferenca entre 6 e 16 lados de um tubo de 130ms.
+    const geometry = new CylinderGeometry(TRACE_BEAM_RAIO, TRACE_BEAM_RAIO, 1, 6, 1, true)
+
+    for (let i = 0; i < MAX_TRACE_BEAMS; i++) {
+      const material = new MeshBasicMaterial({
+        color: TRACE_BEAM_COR,
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+        blending: AdditiveBlending,
+        fog: false,
+      })
+
+      const mesh = new Mesh(geometry, material)
+      mesh.visible = false
+      mesh.frustumCulled = false
+      this.scene.add(mesh)
+      this.traceBeamPool.push({ mesh, material, vidaMs: 0 })
+    }
+  }
+
+  /**
+   * Acende um traçador em volume de `from` a `to`, na mesma cota Y (os tiros
+   * do jogador sempre viajam nessa altura fixa — ver onFire). O cilindro
+   * nasce apontando em Y; giramos essa direcao unitaria ate o rumo do tiro e
+   * esticamos so o eixo local Y pelo comprimento, sem alocar vetor novo por
+   * disparo (os auxiliares sao estaticos do modulo).
+   */
+  private emitirTraceBeam(fromX: number, y: number, fromZ: number, toX: number, toZ: number): void {
+    const dx = toX - fromX
+    const dz = toZ - fromZ
+    const total = Math.hypot(dx, dz)
+    // Recuo so quando ha percurso de sobra; tiro a queima-roupa fica sem
+    // feixe (o flash de impacto conta a historia sozinho nessa distancia).
+    if (total < TRACE_BEAM_RECUO_INICIAL + 24) return
+    const inicioX = fromX + (dx / total) * TRACE_BEAM_RECUO_INICIAL
+    const inicioZ = fromZ + (dz / total) * TRACE_BEAM_RECUO_INICIAL
+    const comprimento = total - TRACE_BEAM_RECUO_INICIAL
+
+    const slot = this.traceBeamPool[this.proximoTraceBeam]!
+    this.proximoTraceBeam = (this.proximoTraceBeam + 1) % this.traceBeamPool.length
+
+    direcaoTraceBeamAux.set(dx, 0, dz).normalize()
+    slot.mesh.quaternion.setFromUnitVectors(EIXO_Y_AUX, direcaoTraceBeamAux)
+    slot.mesh.position.set(
+      inicioX + direcaoTraceBeamAux.x * comprimento * 0.5,
+      y,
+      inicioZ + direcaoTraceBeamAux.z * comprimento * 0.5,
+    )
+    slot.mesh.scale.set(1, comprimento, 1)
+
+    slot.mesh.visible = true
+    slot.material.opacity = TRACE_BEAM_OPACIDADE
+    slot.vidaMs = TRACE_BEAM_VIDA_MS
+  }
+
+  /** Some os traçadores em volume aos poucos, com decaimento rapido — o
+   *  pedido era "menos difuso", entao o fim precisa ser nitido, nao um
+   *  esmaecer lento igual ao decal de parede. */
+  private atualizarTraceBeams(deltaMs: number): void {
+    for (const slot of this.traceBeamPool) {
+      if (slot.vidaMs <= 0) continue
+
+      slot.vidaMs -= deltaMs
+      if (slot.vidaMs <= 0) {
+        slot.mesh.visible = false
+        slot.material.opacity = 0
+        continue
+      }
+
+      const restante = slot.vidaMs / TRACE_BEAM_VIDA_MS
+      slot.material.opacity = TRACE_BEAM_OPACIDADE * restante * restante
+    }
+  }
+
+  /**
+   * Deposito de flashes de impacto: sprites aditivos billboard, no mesmo
+   * padrao radial em canvas usado pelo decal e pelas particulas — nucleo
+   * quase solido que esvanece rapido, so que redondo e sempre de frente para
+   * a camera, para marcar com nitidez ONDE o tiro terminou.
+   */
+  private buildImpactFlashes(): void {
+    const textura = criarTexturaClarao()
+    const geometry = new PlaneGeometry(1, 1)
+
+    for (let i = 0; i < MAX_IMPACT_FLASHES; i++) {
+      const material = new MeshBasicMaterial({
+        map: textura,
+        color: 0xffffff,
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+        blending: AdditiveBlending,
+        fog: false,
+      })
+
+      const mesh = new Mesh(geometry, material)
+      mesh.visible = false
+      mesh.frustumCulled = false
+      this.scene.add(mesh)
+      this.impactFlashPool.push({ mesh, material, vidaMs: 0 })
+    }
+  }
+
+  /**
+   * Acende um flash no ponto exato onde o traçador termina.
+   *
+   * @param acerto cor quente em parede, avermelhada quando o tiro acertou
+   *   inimigo — o mesmo campo `hit` do ShotTrace que ja decide faisca vs
+   *   sangue, reaproveitado aqui.
+   */
+  private emitirImpactFlash(x: number, y: number, z: number, acerto: boolean): void {
+    const slot = this.impactFlashPool[this.proximoImpactFlash]!
+    this.proximoImpactFlash = (this.proximoImpactFlash + 1) % this.impactFlashPool.length
+
+    slot.mesh.position.set(x, y, z)
+    // Billboard simples: encara a camera no instante do disparo. O flash some
+    // em 90ms, entao nao vale o custo de atualizar isso todo quadro.
+    slot.mesh.quaternion.copy(this.camera.quaternion)
+    const escala = IMPACT_FLASH_TAMANHO * (0.85 + Math.random() * 0.3)
+    slot.mesh.scale.set(escala, escala, 1)
+    slot.material.color.set(acerto ? IMPACT_FLASH_COR_ACERTO : IMPACT_FLASH_COR_PAREDE)
+
+    slot.mesh.visible = true
+    slot.material.opacity = IMPACT_FLASH_OPACIDADE
+    slot.vidaMs = IMPACT_FLASH_VIDA_MS
+  }
+
+  /** Mesmo esquema de decaimento rapido dos traçadores: o flash precisa
+   *  sumir com nitidez, nao arrastar um brilho residual pela cena. */
+  private atualizarImpactFlashes(deltaMs: number): void {
+    for (const slot of this.impactFlashPool) {
+      if (slot.vidaMs <= 0) continue
+
+      slot.vidaMs -= deltaMs
+      if (slot.vidaMs <= 0) {
+        slot.mesh.visible = false
+        slot.material.opacity = 0
+        continue
+      }
+
+      const restante = slot.vidaMs / IMPACT_FLASH_VIDA_MS
+      slot.material.opacity = IMPACT_FLASH_OPACIDADE * restante * restante
+    }
+  }
+
   private aplicarQualidade(settings: QualitySettings): void {
     this.renderer.shadowMap.enabled = settings.shadows
     this.sun.castShadow = settings.shadows
@@ -376,7 +835,7 @@ export class Renderer {
     return this.governor.nivel
   }
 
-  /** Registra o disparo: recuo, clarao e rastros dos chumbos. */
+  /** Registra o disparo: recuo, clarao, traçador em volume e rastros dos chumbos. */
   onFire(traces: readonly ShotTrace[], eyeY: number): void {
     this.recoil = 1
     this.flashTimer = 1
@@ -389,6 +848,18 @@ export class Renderer {
     this.muzzleLight.position.set(this.camera.position.x, eyeY, this.camera.position.z)
 
     const count = Math.min(traces.length, MAX_TRACES)
+    // Unico sinal disponivel aqui para distinguir rifle de escopeta: rifle
+    // sempre manda 1 traço (loadout.ts, pellets:1), escopeta sempre manda 7
+    // (DOOM_WEAPONS.shotgun.pellets). onFire nao recebe o id da arma.
+    const ehEscopeta = count > 1
+    this.traceLineOpacidadeAlvo = ehEscopeta ? TRACE_LINE_OPACIDADE_ESCOPETA : 0
+
+    let somaFromX = 0
+    let somaFromZ = 0
+    let somaToX = 0
+    let somaToZ = 0
+    let algumAcerto = false
+
     for (let i = 0; i < MAX_TRACES; i++) {
       const trace = i < count ? traces[i]! : null
       const offset = i * 6
@@ -398,15 +869,47 @@ export class Renderer {
         continue
       }
 
+      somaFromX += trace.fromX
+      somaFromZ += trace.fromZ
+      somaToX += trace.toX
+      somaToZ += trace.toZ
+      if (trace.hit) algumAcerto = true
+
+      // Na escopeta as 7 linhas de chumbo viram contexto: mais curtas, o
+      // traçador central e que mostra o trajeto. No rifle o comprimento fica
+      // integral, mas a opacidade acima ja zera a linha mesmo assim.
+      const toX = ehEscopeta
+        ? trace.fromX + (trace.toX - trace.fromX) * TRACE_LINE_ENCURTAMENTO_ESCOPETA
+        : trace.toX
+      const toZ = ehEscopeta
+        ? trace.fromZ + (trace.toZ - trace.fromZ) * TRACE_LINE_ENCURTAMENTO_ESCOPETA
+        : trace.toZ
+
       this.tracePositions[offset] = trace.fromX
       this.tracePositions[offset + 1] = eyeY - 3
       this.tracePositions[offset + 2] = trace.fromZ
-      this.tracePositions[offset + 3] = trace.toX
+      this.tracePositions[offset + 3] = toX
       this.tracePositions[offset + 4] = eyeY - 3
-      this.tracePositions[offset + 5] = trace.toZ
+      this.tracePositions[offset + 5] = toZ
     }
 
     this.traceLines.geometry.attributes.position!.needsUpdate = true
+
+    // Traçador principal em volume: um so por disparo, na direcao media do
+    // tiro. No rifle (1 traço) a media e o proprio traço, entao o cilindro
+    // vai exatamente do cano ao ponto de impacto. Na escopeta a media dos 7
+    // chumbos da a direcao central pedida — sem duplicar logica entre as duas
+    // armas. O flash de impacto acende no mesmo ponto medio, avermelhado se
+    // qualquer chumbo acertou o inimigo.
+    if (count > 0) {
+      const mediaFromX = somaFromX / count
+      const mediaFromZ = somaFromZ / count
+      const mediaToX = somaToX / count
+      const mediaToZ = somaToZ / count
+
+      this.emitirTraceBeam(mediaFromX, eyeY - 3, mediaFromZ, mediaToX, mediaToZ)
+      this.emitirImpactFlash(mediaToX, eyeY - 3, mediaToZ, algumAcerto)
+    }
 
     // Faisca na parede, sangue no alvo: a cor do respingo diz se o tiro
     // acertou antes que a barra de vida do inimigo mude.
@@ -416,19 +919,33 @@ export class Renderer {
       const dirZ = trace.fromZ - trace.toZ
       const comprimento = Math.hypot(dirX, dirZ) || 1
 
-      this.particles.emitir(
-        trace.hit ? 'sangue' : 'faisca',
-        trace.toX,
-        eyeY - 3,
-        trace.toZ,
-        trace.hit ? 5 : 3,
-        dirX / comprimento,
-        dirZ / comprimento,
-      )
+      if (trace.hit) {
+        // Sangue continua no sentido do disparo (o oposto de dirX/dirZ, que
+        // aponta de volta para o cano) — o jato sai pelo lado oposto ao
+        // impacto, como uma ferida de saida, em vez de espirrar na cara de
+        // quem atirou.
+        this.particles.emitir(
+          'sangue',
+          trace.toX,
+          eyeY - 3,
+          trace.toZ,
+          SANGUE_QTD_POR_ACERTO,
+          -dirX / comprimento,
+          -dirZ / comprimento,
+        )
+      } else {
+        this.particles.emitir(
+          'faisca',
+          trace.toX,
+          eyeY - 3,
+          trace.toZ,
+          3,
+          dirX / comprimento,
+          dirZ / comprimento,
+        )
 
-      // Decal so quando o tiro NAO acertou inimigo — trace.hit ja e a mesma
-      // distincao que decide faisca vs sangue acima, entao reaproveita.
-      if (!trace.hit) {
+        // Decal so quando o tiro NAO acertou inimigo — trace.hit ja e a mesma
+        // distincao que decide faisca vs sangue acima, entao reaproveita.
         this.emitirDecal(
           trace.toX, eyeY - 3, trace.toZ,
           dirX / comprimento, dirZ / comprimento,
@@ -557,10 +1074,12 @@ export class Renderer {
     this.muzzleLight.intensity = this.flashTimer * 3.2
 
     this.atualizarDecais(deltaMs)
+    this.atualizarTraceBeams(deltaMs)
+    this.atualizarImpactFlashes(deltaMs)
 
     const traceMaterial = this.traceLines.material as LineBasicMaterial
-    traceMaterial.opacity = this.traceTimer * 0.7
-    this.traceLines.visible = this.traceTimer > 0.01
+    traceMaterial.opacity = this.traceTimer * this.traceLineOpacidadeAlvo
+    this.traceLines.visible = this.traceTimer > 0.01 && this.traceLineOpacidadeAlvo > 0
 
     const enemyMaterial = this.enemyTraceLines.material as LineBasicMaterial
     enemyMaterial.opacity = this.enemyTraceTimer * 0.9
@@ -707,6 +1226,37 @@ function criarTexturaDecal(): CanvasTexture {
 
   texturaDecalCache = new CanvasTexture(canvas)
   return texturaDecalCache
+}
+
+/** Textura do flash de impacto, gerada uma unica vez e reusada por todo o pool. */
+let texturaClaraoCache: CanvasTexture | null = null
+
+/**
+ * Nucleo quase solido que esvanece rapido — o mesmo padrao de gradiente
+ * radial do sprite de particulas (spriteRedondo em particles.ts), so que mais
+ * compacto no centro para ler como "pancada" pontual, nao "nuvem".
+ */
+function criarTexturaClarao(): CanvasTexture {
+  if (texturaClaraoCache) return texturaClaraoCache
+
+  const size = 64
+  const canvas = document.createElement('canvas')
+  canvas.width = size
+  canvas.height = size
+  const ctx = canvas.getContext('2d')
+  if (!ctx) throw new Error('Canvas 2D indisponivel neste navegador')
+
+  const centro = size / 2
+  const gradiente = ctx.createRadialGradient(centro, centro, 0, centro, centro, centro)
+  gradiente.addColorStop(0, 'rgba(255,255,255,1)')
+  gradiente.addColorStop(0.35, 'rgba(255,255,255,0.9)')
+  gradiente.addColorStop(0.7, 'rgba(255,255,255,0.25)')
+  gradiente.addColorStop(1, 'rgba(255,255,255,0)')
+  ctx.fillStyle = gradiente
+  ctx.fillRect(0, 0, size, size)
+
+  texturaClaraoCache = new CanvasTexture(canvas)
+  return texturaClaraoCache
 }
 
 export { Color }

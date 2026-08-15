@@ -193,7 +193,9 @@ function spriteClarao(): CanvasTexture {
 
 function construirClarao(): Mesh {
   const clarao = new Mesh(
-    new PlaneGeometry(0.34, 0.34),
+    // 0.34 com o sprite radial virava um sol descolado da arma (conferido em
+    // captura); o halo do gradiente ja estende o brilho alem da borda.
+    new PlaneGeometry(0.19, 0.19),
     new MeshBasicMaterial({
       map: spriteClarao(),
       transparent: true,

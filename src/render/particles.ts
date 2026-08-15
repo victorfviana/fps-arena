@@ -70,6 +70,13 @@ interface Perfil {
   /** Aditivo soma luz (faisca, sangue); fumaca pede blending normal, senao
    *  nuvens sobrepostas estouram em branco e param de parecer fumaca. */
   aditivo: boolean
+  /** Peso da direcao preferencial (dirX/dirZ) na velocidade inicial, 0-1; o
+   *  resto vem do cone aleatorio abaixo. Default efetivo 0.7 quando omitido
+   *  — mantem faisca e fumaca identicas ao comportamento anterior. */
+  direcaoPeso?: number
+  /** Abertura do cone aleatorio ao redor da direcao preferencial. Default
+   *  efetivo 0.9 quando omitido — idem, preserva faisca e fumaca. */
+  coneAleatorio?: number
 }
 
 const PERFIS: Record<ParticleKind, Perfil> = {
@@ -85,10 +92,16 @@ const PERFIS: Record<ParticleKind, Perfil> = {
     cor: [0.55, 0.55, 0.54], vidaMs: 420, velocidade: 48, gravidade: -0.1,
     tamanho: 11, arrasto: 3.0, capacidade: 100, opacidade: 0.55, aditivo: false,
   },
-  // Sangue: escuro e pesado, para separar acerto em inimigo de acerto em parede.
+  // Sangue: escuro e pesado, para separar acerto em inimigo de acerto em
+  // parede. Direcao mais coerente (peso alto, cone estreito) que faisca e
+  // fumaca: o pedido era um jato que se leia como saida de ferida, nao uma
+  // explosao redonda. Capacidade maior que o dobro da emissao mais pesada
+  // possivel num so tiro (7 chumbos da escopeta x 9 particulas = 63), para
+  // nunca reciclar particula ainda viva dentro do mesmo disparo.
   sangue: {
     cor: [0.62, 0.10, 0.10], vidaMs: 380, velocidade: 260, gravidade: 1.4,
-    tamanho: 7, arrasto: 1.2, capacidade: 160, opacidade: 0.9, aditivo: true,
+    tamanho: 7, arrasto: 1.2, capacidade: 240, opacidade: 0.9, aditivo: true,
+    direcaoPeso: 0.86, coneAleatorio: 0.45,
   },
 }
 
@@ -139,6 +152,8 @@ class EspeciePool {
 
   emitir(quantidade: number, x: number, y: number, z: number, dirX: number, dirZ: number): void {
     const capacidade = this.perfil.capacidade
+    const direcaoPeso = this.perfil.direcaoPeso ?? 0.7
+    const aberturaCone = this.perfil.coneAleatorio ?? 0.9
 
     for (let i = 0; i < quantidade; i++) {
       const indice = this.proximo
@@ -149,14 +164,16 @@ class EspeciePool {
       this.posicoes[p + 1] = y
       this.posicoes[p + 2] = z
 
-      // Cone em torno da direcao dada, com metade da forca vindo do acaso.
+      // Cone em torno da direcao dada, com o tanto de acaso que sobra do peso
+      // direcional do perfil (sangue usa um cone mais estreito que faisca e
+      // fumaca — ver PERFIS.sangue).
       const angulo = Math.random() * Math.PI * 2
-      const inclinacao = Math.random() * 0.9
+      const inclinacao = Math.random() * aberturaCone
       const forca = this.perfil.velocidade * (0.45 + Math.random() * 0.55)
 
-      this.velocidades[p] = (dirX * 0.7 + Math.cos(angulo) * inclinacao) * forca
+      this.velocidades[p] = (dirX * direcaoPeso + Math.cos(angulo) * inclinacao) * forca
       this.velocidades[p + 1] = (0.35 + Math.random() * 0.75) * forca
-      this.velocidades[p + 2] = (dirZ * 0.7 + Math.sin(angulo) * inclinacao) * forca
+      this.velocidades[p + 2] = (dirZ * direcaoPeso + Math.sin(angulo) * inclinacao) * forca
 
       const variacao = 0.82 + Math.random() * 0.36
       this.cores[p] = this.perfil.cor[0] * variacao
