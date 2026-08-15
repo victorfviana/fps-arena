@@ -64,8 +64,11 @@ Numeros de referencia atualmente travados:
 
 ## Estado
 
-Jogavel e publicado. Movimento, arma, inimigos, ondas, HUD e audio prontos,
-com 205 testes cobrindo a simulacao.
+Jogavel e publicado, com progressao: tres ambientes ligados por portas
+(galpao, corredores, patio), IA com cobertura e flanco, sargento de escopeta
+do benchmark, e tela de vitoria ao limpar o terceiro. Modelos, texturas, HDRI
+e som de tiro vem de assets CC0/CC-BY rastreados em CREDITS.md, com fallback
+procedural integral. 254 testes cobrindo a simulacao.
 
 O loop adversarial rodou sobre o nucleo sensorial e parou por nota de corte
 atingida, com media 4,45 na segunda de duas iteracoes. O scorecard esta em

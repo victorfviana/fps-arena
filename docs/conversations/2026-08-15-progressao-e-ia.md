@@ -48,6 +48,16 @@ antes de o tempo real correr.
 
 254 testes, tsc limpo, publicado. 27 testes novos de progressão/IA.
 
+## Próximo passo (retomada)
+
+Victor está jogando a versão publicada (acb2177) e vai dar o veredito. A
+retomada começa por ele: cada sensação tem alavanca nomeada — dificuldade
+(cadências/curva de acerto em enemy.ts), luz por sala (doses em renderer.ts),
+ladrilho do tijolo (TILE_* em renderer.ts), som (GANHO_/REVERB_ no topo de
+sfx.ts). Sem veredito, os candidatos naturais são: crossfade de luz entre
+salas, medição de dificuldade ativa das salas 2-3, e o nome do jogo (ainda
+`fps-arena`, pendente desde a fundação).
+
 ## Não verificado
 
 - Dificuldade das salas 2-3 para jogador ativo: sem medição automatizada
