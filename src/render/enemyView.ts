@@ -56,6 +56,30 @@ const PALETTE: Record<EnemyKind, { body: number; head: number; limb: number }> =
   sergeant: { body: 0x3e5670, head: 0x6a86a4, limb: 0x2f4257 },
 }
 
+/**
+ * Tingimento base do MODELO gltf, por tipo. Ausente = o modelo entra como veio
+ * do arquivo (zombieman e imp).
+ *
+ * Existe porque o sargento divide o orc.gltf com o zombieman (ver
+ * EnemyModelSet): sem tinta, seriam dois bonecos verdes identicos, e a decisao
+ * tatica "atirar primeiro em quem cospe tres chumbos" viraria adivinhacao. O
+ * azul-ardosia escuro le como farda de guarda e se separa do verde do orc a
+ * qualquer distancia, inclusive para quem nao distingue bem matizes — a
+ * LUMINANCIA tambem cai, entao a diferenca sobrevive em silhueta.
+ *
+ * `corpo` MULTIPLICA a cor do material (o atlas do gltf vem com color branco,
+ * entao o efeito e tingir a textura inteira). `emissivo` levanta um pouco as
+ * sombras em azul, para o corpo escurecido nao virar mancha preta no fundo
+ * escuro dos corredores.
+ *
+ * O tingimento por dano continua por cima: `aplicarCor` guarda ESTA cor como
+ * base e interpola dela ate o branco, entao o flash de acerto e a palidez de
+ * quem esta morrendo funcionam igual aos dos outros tipos.
+ */
+const TINTA_MODELO: Partial<Record<EnemyKind, { corpo: number; emissivo: number }>> = {
+  sergeant: { corpo: 0x5a6b85, emissivo: 0x141c28 },
+}
+
 /** Cor do corpo no instante do dano. Vale para os dois caminhos. */
 const PAIN_COLOR = new Color(0xffffff)
 
@@ -428,9 +452,9 @@ export class EnemyRenderer {
       return reused
     }
 
-    // Tipo sem modelo gltf proprio (o sargento, ate a etapa C escolher o dele)
-    // cai no corpo procedural — o mesmo caminho de quando a rede falha.
-    const modelo = this.modelos?.[kind as keyof EnemyModelSet] ?? null
+    // Sem modelo gltf para este tipo (ou sem modelos nenhum, porque a rede
+    // falhou), cai no corpo procedural — o mesmo caminho de sempre.
+    const modelo = this.modelos?.[kind] ?? null
     return modelo ? this.buildModel(kind, modelo) : this.buildProcedural(kind)
   }
 
@@ -584,6 +608,7 @@ export class EnemyRenderer {
     // do corpo procedural, aplicada aos materiais do gltf. Sem o clone aqui,
     // recolorir esta view mudaria a cor de toda instancia que compartilha o
     // mesmo material de origem.
+    const tinta = TINTA_MODELO[kind]
     const materials: Material[] = []
     const baseColors: Color[] = []
     clone.traverse((objeto) => {
@@ -597,7 +622,16 @@ export class EnemyRenderer {
 
       for (const material of clonados) {
         materials.push(material)
-        const cor = (material as MeshStandardMaterial).color as Color | undefined
+        const padrao = material as MeshStandardMaterial
+        const cor = padrao.color as Color | undefined
+
+        // A tinta entra AQUI, no clone do material desta view — nunca no
+        // material de origem do gltf, que e compartilhado com o zombieman.
+        if (tinta && cor) {
+          cor.multiply(new Color(tinta.corpo))
+          if (padrao.emissive) padrao.emissive.set(tinta.emissivo)
+        }
+
         baseColors.push(cor ? cor.clone() : new Color(0xffffff))
       }
     })

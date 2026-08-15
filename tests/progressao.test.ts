@@ -32,7 +32,13 @@ import {
   type Bounds,
 } from '../src/world/arena'
 import { closestPointOnSegment, moveWithCollision, segmentBlocked } from '../src/world/collision'
-import { WAVES_POR_SALA, waveComposition, waveQueue } from '../src/world/waves'
+import {
+  ONDA_DO_SARGENTO,
+  WAVES_POR_SALA,
+  waveComposition,
+  waveQueue,
+  type WaveComposition,
+} from '../src/world/waves'
 import type { TicCommand } from '../src/core/input'
 
 function command(overrides: Partial<TicCommand> = {}): TicCommand {
@@ -415,24 +421,98 @@ describe('ondas por sala', () => {
     }
   })
 
-  it('poe mais imps nos corredores e mais zombiemen no patio', () => {
+  it('poe mais imps nos corredores e mais atiradores no patio', () => {
+    // AJUSTE DECLARADO: a assercao do patio media `zombieman` isolado, e passou
+    // a medir zumbis MAIS sargentos. O motivo e que a fatia do sargento sai da
+    // dos zumbis (ver WaveComposition.sergeant), entao contar so os zumbis
+    // passaria a medir "quantos atiradores NAO foram promovidos" — o oposto do
+    // que o teste quer travar. O que o patio precisa e de mais gente atirando
+    // de longe que o galpao, e e exatamente isso que esta escrito aqui.
+    const atiradores = (c: WaveComposition) => c.zombieman + c.sergeant
+
     for (let wave = 4; wave <= 9; wave++) {
       const galpao = waveComposition(wave, 1)
       const corredores = waveComposition(wave, 2)
       const patio = waveComposition(wave, 3)
 
       expect(corredores.imp, `onda ${wave}`).toBeGreaterThan(galpao.imp)
-      expect(patio.zombieman, `onda ${wave}`).toBeGreaterThan(galpao.zombieman)
+      expect(atiradores(patio), `onda ${wave}`).toBeGreaterThan(atiradores(galpao))
     }
   })
 
   it('mantem o mesmo total por onda, seja qual for a sala', () => {
     // A sala inclina a MISTURA, nao a quantidade: a curva de pressao continua
-    // sendo uma so, e o teto de onda segue valendo.
+    // sendo uma so, e o teto de onda segue valendo. O sargento entra na conta
+    // porque ele TOMA a vaga de um zumbi, nao soma um corpo a onda.
     for (let wave = 1; wave <= 12; wave++) {
-      const total = (c: { zombieman: number; imp: number }) => c.zombieman + c.imp
+      const total = (c: WaveComposition) => c.zombieman + c.imp + c.sergeant
       expect(total(waveComposition(wave, 2))).toBe(total(waveComposition(wave, 1)))
       expect(total(waveComposition(wave, 3))).toBe(total(waveComposition(wave, 1)))
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// O sargento na composicao
+// ---------------------------------------------------------------------------
+
+describe('sargento nas ondas', () => {
+  it('nunca poe um sargento na sala 1', () => {
+    // A sala calibrada nao ganha inimigo novo. A janela de sobrevivencia parado
+    // foi medida com zumbis e imps; um tipo que cospe tres chumbos por disparo
+    // a invalidaria sem que nenhum outro teste reclamasse.
+    for (let wave = 1; wave <= 20; wave++) {
+      expect(waveComposition(wave, 1).sergeant, `onda ${wave}`).toBe(0)
+      expect(waveQueue(wave, 1), `onda ${wave}`).not.toContain('sergeant')
+    }
+  })
+
+  it('poe sargento no patio a partir da onda 2, e nenhum antes', () => {
+    for (let wave = 1; wave < ONDA_DO_SARGENTO; wave++) {
+      expect(waveComposition(wave, 3).sergeant, `onda ${wave}`).toBe(0)
+      expect(waveQueue(wave, 3), `onda ${wave}`).not.toContain('sergeant')
+    }
+
+    for (let wave = ONDA_DO_SARGENTO; wave <= 20; wave++) {
+      expect(waveComposition(wave, 3).sergeant, `onda ${wave}`).toBeGreaterThan(0)
+      expect(waveQueue(wave, 3), `onda ${wave}`).toContain('sergeant')
+    }
+  })
+
+  it('poe menos sargentos nos corredores do que no patio', () => {
+    // "Poucos" e um adjetivo; o que da para travar e a ordem entre as salas.
+    for (let wave = ONDA_DO_SARGENTO; wave <= 20; wave++) {
+      expect(waveComposition(wave, 2).sergeant, `onda ${wave}`).toBeLessThan(
+        waveComposition(wave, 3).sergeant,
+      )
+    }
+  })
+
+  it('entrega uma fila que bate com a composicao declarada, em toda sala', () => {
+    // Sem isto, um sargento poderia sumir entre a composicao e a fila (ou
+    // nascer no lugar de um imp) sem nenhum teste perceber.
+    for (const sala of [1, 2, 3]) {
+      for (let wave = 1; wave <= 20; wave++) {
+        const composicao = waveComposition(wave, sala)
+        const fila = waveQueue(wave, sala)
+        const onde = `sala ${sala}, onda ${wave}`
+
+        const conta = (kind: string) => fila.filter((k) => k === kind).length
+        expect(conta('zombieman'), onde).toBe(composicao.zombieman)
+        expect(conta('imp'), onde).toBe(composicao.imp)
+        expect(conta('sergeant'), onde).toBe(composicao.sergeant)
+      }
+    }
+  })
+
+  it('nunca deixa a composicao negativa, nem no teto da curva', () => {
+    for (const sala of [1, 2, 3]) {
+      for (let wave = 1; wave <= 60; wave++) {
+        const c = waveComposition(wave, sala)
+        expect(c.zombieman, `sala ${sala}, onda ${wave}`).toBeGreaterThanOrEqual(0)
+        expect(c.imp).toBeGreaterThanOrEqual(0)
+        expect(c.sergeant).toBeGreaterThanOrEqual(0)
+      }
     }
   })
 })

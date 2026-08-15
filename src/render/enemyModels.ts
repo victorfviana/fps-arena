@@ -28,29 +28,47 @@ export interface EnemyModel {
 export interface EnemyModelSet {
   zombieman: EnemyModel
   imp: EnemyModel
+  /**
+   * Sargento de escopeta.
+   *
+   * MESMO arquivo do zombieman (orc.gltf), de proposito: o pack nao tem uma
+   * silhueta melhor para "guarda de farda", e inventar uma na marra custaria a
+   * fase de arte inteira. O que separa os dois na tela e o TINGIMENTO aplicado
+   * no build da view (ver TINTA_MODELO em enemyView.ts) — azul-ardosia escuro
+   * contra o verde do orc.
+   *
+   * Compartilhar o template e seguro porque nenhuma view usa o objeto
+   * diretamente: cada uma clona com SkeletonUtils e clona os materiais.
+   */
+  sergeant: EnemyModel
 }
 
 /**
  * Caminho relativo: o vite serve public/ na raiz e o base do projeto e
  * relativo, entao 'models/orc.gltf' resolve certo tanto em dev quanto no
  * build publicado, sem depender de import.meta.url ou de barra inicial.
+ *
+ * Sao os ARQUIVOS, e nao os tipos de inimigo: dois tipos dividem o orc, e
+ * baixar o mesmo gltf duas vezes so para dar um nome a cada um seria pagar
+ * 1,2 MB de rede por nada.
  */
-const CAMINHOS: Record<keyof EnemyModelSet, string> = {
-  zombieman: 'models/orc.gltf',
-  imp: 'models/demon.gltf',
-}
+const CAMINHOS = {
+  orc: 'models/orc.gltf',
+  demon: 'models/demon.gltf',
+} as const
 
 export async function carregarModelosInimigos(): Promise<EnemyModelSet | null> {
   try {
     const loader = new GLTFLoader()
     const [orc, demon] = await Promise.all([
-      loader.loadAsync(CAMINHOS.zombieman),
-      loader.loadAsync(CAMINHOS.imp),
+      loader.loadAsync(CAMINHOS.orc),
+      loader.loadAsync(CAMINHOS.demon),
     ])
 
     return {
       zombieman: paraModelo(orc.scene, orc.animations),
       imp: paraModelo(demon.scene, demon.animations),
+      sergeant: paraModelo(orc.scene, orc.animations),
     }
   } catch (erro) {
     console.warn(

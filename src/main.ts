@@ -48,6 +48,8 @@ const weaponLabel = requireElement<HTMLDivElement>('#weapon')
 const finalScore = requireElement<HTMLDivElement>('#final-score')
 const finalKills = requireElement<HTMLSpanElement>('#final-kills')
 const deathCause = requireElement<HTMLParagraphElement>('#death-cause')
+const fimTitulo = requireElement<HTMLHeadingElement>('#fim-titulo')
+const waveLabel = requireElement<HTMLDivElement>('#wave-label')
 
 const hud = new Hud({
   root: requireElement<HTMLDivElement>('#hud'),
@@ -203,7 +205,11 @@ const loop = new FixedTimestepLoop({
           tiro.fromX - game.player.x,
           tiro.fromZ - game.player.z,
         )
-        sfx.enemyShot(anguloRelativo(tiro.fromX, tiro.fromZ), distancia)
+        sfx.enemyShot(
+          anguloRelativo(tiro.fromX, tiro.fromZ),
+          distancia,
+          tiro.kind === 'sergeant' ? 'shotgun' : 'rifle',
+        )
       }
     }
 
@@ -231,6 +237,20 @@ const loop = new FixedTimestepLoop({
       hud.toast(`onda ${events.waveStarted}`)
       sfx.waveStart()
     }
+
+    if (events.doorOpened !== null) {
+      renderer.onDoorOpened(events.doorOpened)
+      sfx.porta()
+      hud.toast('a porta abriu — avance', 1800)
+    }
+
+    if (events.roomEntered !== null) {
+      renderer.aoEntrarNaSala(events.roomEntered)
+      waveLabel.textContent = `Sala ${events.roomEntered}/3 · onda`
+      hud.toast(`sala ${events.roomEntered}/3`, 1600)
+    }
+
+    if (events.gameWon) winGame()
 
     if (events.weaponSwapped) {
       renderer.setWeapon(events.weaponSwapped)
@@ -365,7 +385,10 @@ function descreverMorte(): string {
   const causa = game.lastDamage
   if (!causa) return `Voce caiu na onda ${game.wave}.`
 
-  const nome = causa.kind === 'imp' ? 'Um imp' : 'Um zumbi'
+  const nome =
+    causa.kind === 'imp' ? 'Um imp'
+    : causa.kind === 'sergeant' ? 'Um sargento de escopeta'
+    : 'Um zumbi'
   const onde = causa.melee
     ? 'chegou perto e te alcancou'
     : `atirou de longe, a ${Math.round(causa.distance)} passos`
@@ -376,12 +399,25 @@ function descreverMorte(): string {
 function endGame(): void {
   finalScore.textContent = String(game.score)
   finalKills.textContent = String(game.kills)
+  fimTitulo.textContent = 'Fim'
   deathCause.textContent = descreverMorte()
   gameOverScreen.hidden = false
   hud.hide()
   // O golpe final soa distinto do dano comum, antes do jingle de encerramento.
   sfx.playerDeath()
   sfx.gameOver()
+  if (document.pointerLockElement) document.exitPointerLock()
+}
+
+/** Fim feliz: as tres salas limpas. Reusa a tela de fim com outro texto. */
+function winGame(): void {
+  finalScore.textContent = String(game.score)
+  finalKills.textContent = String(game.kills)
+  fimTitulo.textContent = 'Vitoria'
+  deathCause.textContent = 'As tres salas estao limpas. A arena e sua.'
+  gameOverScreen.hidden = false
+  hud.hide()
+  sfx.vitoria()
   if (document.pointerLockElement) document.exitPointerLock()
 }
 
@@ -394,6 +430,9 @@ function restart(): void {
   latency.lastMs = 0
   fps.worst = Infinity
   renderer.resetQualidade()
+  renderer.resetPortas()
+  renderer.aoEntrarNaSala(1)
+  waveLabel.textContent = 'Sala 1/3 · onda'
   hud.reset()
   enemyRenderer.sync([], 0)
   resetEnemyIds()

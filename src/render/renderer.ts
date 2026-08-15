@@ -18,7 +18,6 @@ import {
   ACESFilmicToneMapping,
   AdditiveBlending,
   AmbientLight,
-  BackSide,
   BoxGeometry,
   BufferAttribute,
   BufferGeometry,
@@ -52,7 +51,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { FOV_HORIZONTAL_DEG, VIEW_HEIGHT } from '../core/doom'
 import type { EnemyShot, ShotTrace } from '../game'
 import type { LoadoutId } from '../weapons/loadout'
-import type { Arena } from '../world/arena'
+import type { Arena, SalaId } from '../world/arena'
 import {
   createCeilingSurface,
   createFloorSurface,
@@ -211,6 +210,85 @@ const TILE_PISO = 64
 const TILE_TETO = 96
 const TILE_OBSTACULO = 64
 
+/**
+ * Quantos map units cabem em UMA unidade de UV das superficies de sala.
+ *
+ * Existe porque o mundo deixou de ser uma sala quadrada: piso, teto e paredes
+ * agora tem tamanhos diferentes entre si (galpao 2048x2048, corredores
+ * 2048x1024, patio 2560x2048, e cada segmento de parede com o seu comprimento).
+ * Um repeat de material unico, calculado a partir de `arena.size` como antes,
+ * esticaria a textura numa superficie e a comprimiria na outra.
+ *
+ * A saida e por a ESCALA FISICA na geometria e nao no material: as UVs de cada
+ * malha sao multiplicadas pela sua dimensao real dividida por este valor, e o
+ * repeat do material passa a significar so "quantos map units cobre um ladrilho
+ * desta textura" (UV_UNIDADE / TILE_*). Com isso um unico material serve a
+ * todas as superficies do mesmo tipo, em qualquer tamanho, e
+ * `usarTexturasDeMundo` continua trocando quatro materiais e nao quarenta.
+ */
+const UV_UNIDADE = 64
+
+/**
+ * Lado do ladrilho de cada textura PROCEDURAL, em map units.
+ *
+ * Sao os mesmos numeros de antes, so que declarados como ladrilho em vez de
+ * como divisor de `arena.size`: 128 e o `escalaBloco` que dava blocos de
+ * concreto de uns 65 cm, 256 e o `arena.size / (arena.size / 256)` do piso e do
+ * teto. Com o esquema de UV acima, superficie nenhuma muda de aparencia na
+ * sala 1 — a conta chega ao mesmo lugar.
+ */
+const PROC_TILE_PAREDE = 128
+const PROC_TILE_PISO = 256
+const PROC_TILE_TETO = 256
+
+/** Espessura da chapa da porta, em map units. */
+const PORTA_ESPESSURA = 14
+
+/** Quanto a chapa transborda o vao de cada lado, para nao deixar fresta. */
+const PORTA_FOLGA = 8
+
+/** Quanto tempo a chapa leva para subir por inteiro, em ms. */
+const PORTA_ABERTURA_MS = 800
+
+/**
+ * Dose de luz por sala.
+ *
+ * Mesmos conjuntos de textura nas tres — o que muda e a luz, que e a alavanca
+ * mais barata e mais legivel para o jogador sentir que trocou de lugar. Os
+ * numeros sao MULTIPLICADORES sobre a luz calibrada do galpao, nunca valores
+ * absolutos: assim a reducao que `usarTexturasDeMundo` aplica quando as
+ * texturas reais entram continua valendo nas tres salas.
+ *
+ * `ceu` e a cor da hemisferica (o lado de cima); `null` = a cor original.
+ *
+ * `nevoa` estica ou encolhe o par near/far da neblina. DIVERGENCIA DECLARADA
+ * do enunciado da etapa, que so pedia luz: a neblina foi calibrada na diagonal
+ * do galpao (far = arena.size * 1,05 = 2150 unidades), e o patio tem 2048
+ * unidades de profundidade — medido, o fundo dele sairia 93% encoberto. A sala
+ * cujo proposito e "linha de visao longa, rifle e luneta brilham" viraria um
+ * muro de nevoa, com o tiro acertando um inimigo que o jogador nao enxerga.
+ * A sala 1 fica em 1,0: nada muda onde a calibracao foi feita.
+ */
+const AMBIENTE_POR_SALA: Record<SalaId, {
+  sol: number
+  ambiente: number
+  hemisferica: number
+  ceu: number | null
+  nevoa: number
+}> = {
+  // Galpao: intocado. E a luz em que a rubrica e a legibilidade foram medidas.
+  1: { sol: 1, ambiente: 1, hemisferica: 1, ceu: null, nevoa: 1 },
+  // Corredores: mais escuro e mais frio. A briga ali e curta e o inimigo
+  // aparece na quina — menos sol aumenta a tensao sem esconder o alvo, porque
+  // a ambiente segue alta o bastante para nada virar breu. A sala tem 1024 de
+  // profundidade, bem dentro do alcance da neblina do galpao: nao mexe.
+  2: { sol: 0.8, ambiente: 0.85, hemisferica: 0.9, ceu: 0x7f93bd, nevoa: 1 },
+  // Patio: mais claro e mais quente, e enxergando o dobro de longe. Com 1,9 o
+  // fundo da sala fica a 25% de neblina — presente como atmosfera, longe de
+  // apagar o alvo.
+  3: { sol: 1.15, ambiente: 1.08, hemisferica: 1.05, ceu: 0xd8c39c, nevoa: 1.9 },
+}
+
 // Auxiliares estaticos do modulo para orientar o traçador em volume sem
 // alocar Vector3 novo a cada disparo — regra de zero alocacao por tiro.
 const EIXO_Y_AUX = new Vector3(0, 1, 0)
@@ -276,13 +354,34 @@ export class Renderer {
   private readonly inclinacao = { x: 0, y: 0 }
   private balanco = 0
 
-  /** Dimensoes da arena, para calcular o repeat das texturas reais. */
-  private readonly arenaSize: number
-  private readonly arenaWallHeight: number
+  /**
+   * Uma chapa por porta da arena, na ordem de `arena.portas`.
+   *
+   * `curso` e quanto ela sobe ate sumir por cima do teto; `progresso` corre de
+   * 0 (fechada) a 1 (fora de vista) e so avanca enquanto `abrindo`.
+   */
+  private readonly portas: Array<{
+    id: number
+    mesh: Mesh
+    yFechada: number
+    curso: number
+    progresso: number
+    abrindo: boolean
+  }> = []
+
+  /**
+   * Luz do galpao, antes de qualquer dose por sala.
+   *
+   * Guardada porque a dose e MULTIPLICATIVA: sem a base, entrar duas vezes na
+   * mesma sala multiplicaria de novo e a arena escureceria a cada travessia.
+   * `usarTexturasDeMundo` mexe nesta base, nao nas luzes — ver la.
+   */
+  private readonly luzBase = { sol: 0, ambiente: 0, hemisferica: 0 }
+  private readonly ceuBase = new Color()
+  private readonly nevoaBase = { perto: 0, longe: 0 }
+  private salaAtual: SalaId = 1
 
   constructor(private readonly canvas: HTMLCanvasElement, arena: Arena) {
-    this.arenaSize = arena.size
-    this.arenaWallHeight = arena.wallHeight
     this.renderer = new WebGLRenderer({
       canvas,
       antialias: true,
@@ -309,11 +408,18 @@ export class Renderer {
     // AQUEM dessa diagonal, entao nenhum ponto visivel da arena chegava perto
     // dele: a neblina nunca tinha efeito visual, so existia no codigo.
     this.scene.fog = new Fog(COR_NEBLINA, arena.size * 0.35, arena.size * 1.05)
+    this.nevoaBase.perto = arena.size * 0.35
+    this.nevoaBase.longe = arena.size * 1.05
 
     const lights = this.buildLights(arena)
     this.sun = lights.sun
     this.ambientLight = lights.ambientLight
     this.hemiLight = lights.hemiLight
+
+    this.luzBase.sol = this.sun.intensity
+    this.luzBase.ambiente = this.ambientLight.intensity
+    this.luzBase.hemisferica = this.hemiLight.intensity
+    this.ceuBase.copy(this.hemiLight.color)
 
     const materiaisArena = this.buildArena(arena)
     this.materialChao = materiaisArena.chao
@@ -386,23 +492,30 @@ export class Renderer {
     // longe, o custo extra nao se paga.
     const aniso = Math.min(8, this.renderer.capabilities.getMaxAnisotropy())
 
-    const lado = this.arenaSize
+    // O repeat nao depende mais do tamanho da arena: cada malha ja carrega a
+    // propria escala fisica nas UVs (ver UV_UNIDADE), entao aqui basta dizer
+    // quantos map units um ladrilho desta textura cobre.
     const algumConjunto = Boolean(t.piso || t.parede || t.teto)
-    if (algumConjunto) this.sun.intensity *= SOL_REDUCAO_TEXTURA_REAL
+    // A reducao entra na BASE, e nao na luz: a dose da sala e reaplicada no fim
+    // desta funcao, por cima do valor ja reduzido.
+    if (algumConjunto) this.luzBase.sol *= SOL_REDUCAO_TEXTURA_REAL
     if (t.piso) {
       this.trocarConjunto(this.materialChao, t.piso, TEXTURA_REAL_METALNESS_PISO, aniso, true,
-        lado / TILE_PISO, lado / TILE_PISO)
+        UV_UNIDADE / TILE_PISO, UV_UNIDADE / TILE_PISO)
     }
     if (t.parede) {
       this.trocarConjunto(this.materialParede, t.parede, TEXTURA_REAL_METALNESS_PAREDE, aniso, true,
-        lado / TILE_PAREDE, this.arenaWallHeight / TILE_PAREDE)
+        UV_UNIDADE / TILE_PAREDE, UV_UNIDADE / TILE_PAREDE)
     }
     if (t.teto) {
       // Teto e obstaculos usam o mesmo conjunto metal_plate (ver mapeamento
       // do ADR 0005) — dois materiais distintos, dois clones, cada um com o
       // ladrilho proprio.
       this.trocarConjunto(this.materialTeto, t.teto, TEXTURA_REAL_METALNESS_METAL, aniso, false,
-        lado / TILE_TETO, lado / TILE_TETO)
+        UV_UNIDADE / TILE_TETO, UV_UNIDADE / TILE_TETO)
+      // Os obstaculos (e a chapa da porta) continuam com UV de BoxGeometry, que
+      // vai de 0 a 1 por face seja qual for o tamanho da caixa — a escala deles
+      // segue vindo do repeat do material, como sempre veio.
       this.trocarConjunto(this.materialObstaculo, t.teto, TEXTURA_REAL_METALNESS_METAL, aniso, false,
         256 / TILE_OBSTACULO, 256 / TILE_OBSTACULO)
     }
@@ -416,9 +529,14 @@ export class Renderer {
       // filtrado que o PMREMGenerator gerou; nao serve mais para nada.
       t.hdri.dispose()
 
-      this.ambientLight.intensity *= HDRI_REDUCAO_LUZ_AMBIENTE
-      this.hemiLight.intensity *= HDRI_REDUCAO_LUZ_AMBIENTE
+      this.luzBase.ambiente *= HDRI_REDUCAO_LUZ_AMBIENTE
+      this.luzBase.hemisferica *= HDRI_REDUCAO_LUZ_AMBIENTE
     }
+
+    // Reaplica a dose da sala em que a partida esta, agora sobre a base
+    // reduzida. Na sala 1 a dose e 1 em tudo, entao isto reproduz exatamente o
+    // que as multiplicacoes diretas faziam antes.
+    this.aoEntrarNaSala(this.salaAtual)
   }
 
   /**
@@ -518,45 +636,50 @@ export class Renderer {
     return { sun, ambientLight, hemiLight }
   }
 
+  /**
+   * Levanta o mundo inteiro — TRES salas, e nao mais a caixa unica do galpao.
+   *
+   * A versao anterior desenhava um chao, um teto e uma caixa envolvente, todos
+   * dimensionados por `arena.size`. Como `arena.size` continua sendo o lado da
+   * SALA INICIAL (por contrato — ver Arena.size), corredores e patio existiam na
+   * fisica e nao existiam na tela: o jogador atravessava a porta e caia num
+   * vazio preto com inimigos flutuando.
+   *
+   * Agora:
+   *   - piso e teto POR SALA, a partir de `sala.bounds`;
+   *   - paredes a partir de `arena.paredesFixas`, um plano vertical por
+   *     segmento — a lista ja vem sem sobreposicao (os vaos das portas sao
+   *     recortes DECLARADOS em `paredeComVao`), entao nenhuma juncao ganha
+   *     parede dupla e nenhum trecho fica sem parede;
+   *   - os obstaculos das tres salas, como sempre.
+   */
   private buildArena(arena: Arena): {
     chao: MeshStandardMaterial
     teto: MeshStandardMaterial
     parede: MeshStandardMaterial
     obstaculo: MeshStandardMaterial
   } {
-    const tiles = arena.size / 256
-
-    const materialChao = surfaceMaterial(createFloorSurface(), tiles, { metalness: 0.35, normalScale: 1.1 })
-    const chao = new Mesh(new PlaneGeometry(arena.size, arena.size), materialChao)
-    chao.rotation.x = -Math.PI / 2
-    chao.receiveShadow = true
-    this.scene.add(chao)
-
-    const materialTeto = surfaceMaterial(createCeilingSurface(), tiles, { metalness: 0.05 })
-    const teto = new Mesh(new PlaneGeometry(arena.size, arena.size), materialTeto)
-    teto.rotation.x = Math.PI / 2
-    teto.position.y = arena.wallHeight
-    this.scene.add(teto)
+    const materialChao = surfaceMaterial(createFloorSurface(), UV_UNIDADE / PROC_TILE_PISO, {
+      metalness: 0.35,
+      normalScale: 1.1,
+    })
+    const materialTeto = surfaceMaterial(createCeilingSurface(), UV_UNIDADE / PROC_TILE_TETO, {
+      metalness: 0.05,
+    })
 
     const paredeMaps = createWallSurface()
-    const materialParede = surfaceMaterial(paredeMaps, 1, { metalness: 0.06, normalScale: 1.4 })
-    const sala = new Mesh(new BoxGeometry(arena.size, arena.wallHeight, arena.size), materialParede)
-    materialParede.side = BackSide
-    // A caixa envolvente usa uma repeticao propria: as paredes sao muito mais
-    // largas que altas, e uma repeticao uniforme esticaria os blocos.
     // Escala do bloco, e nao "um numero que parece bom": a textura traz 6
     // fileiras por repeticao, entao repetir a cada 128 unidades da blocos de
     // cerca de 21 unidades de altura. A 32 unidades por metro isso e um bloco
     // de concreto de uns 65 cm — grande, coerente com a arquitetura da arena.
-    // A versao anterior repetia a cada 320 e produzia tijolos de dois metros.
-    const escalaBloco = 128
-    for (const textura of [paredeMaps.map, paredeMaps.normalMap, paredeMaps.roughnessMap]) {
-      textura.repeat.set(arena.size / escalaBloco, arena.wallHeight / escalaBloco)
-      textura.needsUpdate = true
-    }
-    sala.position.y = arena.wallHeight / 2
-    sala.receiveShadow = true
-    this.scene.add(sala)
+    const materialParede = surfaceMaterial(paredeMaps, UV_UNIDADE / PROC_TILE_PAREDE, {
+      metalness: 0.06,
+      normalScale: 1.4,
+    })
+    // Cada parede virou um plano solto. Sem DoubleSide, um erro de sinal na
+    // orientacao deixaria a sala inteira transparente de um dos lados — e o
+    // custo de desenhar as duas faces de um punhado de planos e nulo.
+    materialParede.side = DoubleSide
 
     // Os obstaculos usam a mesma escala de bloco das paredes, senao pilar e
     // parede parecem feitos de materiais de tamanhos diferentes. Antes disso
@@ -571,10 +694,62 @@ export class Renderer {
     }
     for (const textura of Object.values(paredeMapsObstaculo)) textura.needsUpdate = true
 
-    const materialObstaculo = surfaceMaterial(paredeMapsObstaculo, 256 / escalaBloco, {
+    const materialObstaculo = surfaceMaterial(paredeMapsObstaculo, 256 / PROC_TILE_PAREDE, {
       metalness: 0.1,
       normalScale: 1.2,
     })
+
+    for (const sala of arena.salas) {
+      const largura = sala.bounds.maxX - sala.bounds.minX
+      const profundidade = sala.bounds.maxZ - sala.bounds.minZ
+      const centroX = (sala.bounds.minX + sala.bounds.maxX) / 2
+      const centroZ = (sala.bounds.minZ + sala.bounds.maxZ) / 2
+
+      const chao = new Mesh(
+        this.planoLadrilhado(largura, profundidade),
+        materialChao,
+      )
+      chao.rotation.x = -Math.PI / 2
+      chao.position.set(centroX, 0, centroZ)
+      chao.receiveShadow = true
+      this.scene.add(chao)
+
+      const teto = new Mesh(
+        this.planoLadrilhado(largura, profundidade),
+        materialTeto,
+      )
+      teto.rotation.x = Math.PI / 2
+      teto.position.set(centroX, arena.wallHeight, centroZ)
+      this.scene.add(teto)
+    }
+
+    for (const parede of arena.paredesFixas) {
+      // `height` presente = perimetro de um obstaculo, que ja vira caixa mais
+      // abaixo. So os segmentos de altura cheia (perimetro das salas) sao
+      // parede de verdade — ver Wall.height em collision.ts.
+      if (parede.height !== undefined) continue
+
+      const dx = parede.bx - parede.ax
+      const dz = parede.bz - parede.az
+      const comprimento = Math.hypot(dx, dz)
+      if (comprimento < 1) continue
+
+      const malha = new Mesh(
+        this.planoLadrilhado(comprimento, arena.wallHeight),
+        materialParede,
+      )
+      malha.position.set(
+        (parede.ax + parede.bx) / 2,
+        arena.wallHeight / 2,
+        (parede.az + parede.bz) / 2,
+      )
+      // O plano nasce no XY com o +X local ao longo do comprimento. Girando em
+      // Y por este angulo, esse +X passa a apontar ao longo do segmento — e a
+      // normal, junto, fica perpendicular a parede.
+      malha.rotation.y = Math.atan2(-dz, dx)
+      malha.receiveShadow = true
+      this.scene.add(malha)
+    }
 
     for (const box of arena.boxes) {
       const mesh = new Mesh(new BoxGeometry(box.width, box.height, box.depth), materialObstaculo)
@@ -584,7 +759,144 @@ export class Renderer {
       this.scene.add(mesh)
     }
 
+    this.buildPortas(arena, materialObstaculo)
+
     return { chao: materialChao, teto: materialTeto, parede: materialParede, obstaculo: materialObstaculo }
+  }
+
+  /**
+   * Plano com as UVs ja escaladas pelo tamanho FISICO da superficie.
+   *
+   * E o que permite um material unico servir a superficies de tamanhos
+   * diferentes sem esticar nem comprimir a textura — ver UV_UNIDADE.
+   */
+  private planoLadrilhado(largura: number, altura: number): PlaneGeometry {
+    const geometry = new PlaneGeometry(largura, altura)
+    const uv = geometry.attributes.uv as BufferAttribute
+
+    const escalaU = largura / UV_UNIDADE
+    const escalaV = altura / UV_UNIDADE
+    for (let i = 0; i < uv.count; i++) {
+      uv.setXY(i, uv.getX(i) * escalaU, uv.getY(i) * escalaV)
+    }
+    uv.needsUpdate = true
+
+    return geometry
+  }
+
+  /**
+   * Uma chapa metalica por porta, preenchendo o vao de alto a baixo.
+   *
+   * Estado inicial FECHADA, casando com `Porta.aberta = false` de `createArena`.
+   * A chapa e so aparencia: quem barra corpo e visada e a Wall que a regra
+   * mantem em `arena.walls` enquanto a porta esta fechada. Por isso ela pode
+   * subir em 0,8 s sem que nada da simulacao espere por essa animacao — quando
+   * o evento chega, a passagem ja esta logicamente livre.
+   */
+  private buildPortas(arena: Arena, material: MeshStandardMaterial): void {
+    for (const porta of arena.portas) {
+      const dx = porta.x2 - porta.x1
+      const dz = porta.z2 - porta.z1
+      const largura = Math.hypot(dx, dz) + PORTA_FOLGA
+
+      const mesh = new Mesh(
+        new BoxGeometry(largura, arena.wallHeight, PORTA_ESPESSURA),
+        material,
+      )
+      mesh.position.set(
+        (porta.x1 + porta.x2) / 2,
+        arena.wallHeight / 2,
+        (porta.z1 + porta.z2) / 2,
+      )
+      mesh.rotation.y = Math.atan2(-dz, dx)
+      mesh.castShadow = true
+      mesh.receiveShadow = true
+      this.scene.add(mesh)
+
+      this.portas.push({
+        id: porta.id,
+        mesh,
+        yFechada: arena.wallHeight / 2,
+        // Sobe a altura inteira: o pe da chapa termina rente ao teto, e o teto
+        // (opaco) esconde o resto ate a malha ser desligada de vez.
+        curso: arena.wallHeight,
+        progresso: 0,
+        abrindo: false,
+      })
+    }
+  }
+
+  /**
+   * A porta `id` foi aberta pela regra: comeca a subir.
+   *
+   * Chamado pelo orquestrador quando `GameEvents.doorOpened` traz um id. Nao ha
+   * caminho de volta em partida: fechar so acontece no restart, por resetPortas.
+   */
+  onDoorOpened(id: number): void {
+    const porta = this.portas.find((p) => p.id === id)
+    if (!porta || porta.progresso > 0) return
+
+    porta.mesh.visible = true
+    porta.abrindo = true
+  }
+
+  /** Repoe todas as chapas fechadas. O orquestrador chama no restart. */
+  resetPortas(): void {
+    for (const porta of this.portas) {
+      porta.progresso = 0
+      porta.abrindo = false
+      porta.mesh.position.y = porta.yFechada
+      porta.mesh.visible = true
+    }
+  }
+
+  /** Sobe as chapas que estao abrindo, e some com as que ja subiram. */
+  private atualizarPortas(deltaMs: number): void {
+    for (const porta of this.portas) {
+      if (!porta.abrindo) continue
+
+      porta.progresso = Math.min(1, porta.progresso + deltaMs / PORTA_ABERTURA_MS)
+      // Curva S: a chapa desgruda devagar, corre no meio e encosta macio. Uma
+      // rampa linear denuncia a animacao como interpolacao de codigo.
+      const suave = porta.progresso * porta.progresso * (3 - 2 * porta.progresso)
+      porta.mesh.position.y = porta.yFechada + suave * porta.curso
+
+      if (porta.progresso >= 1) {
+        porta.abrindo = false
+        porta.mesh.visible = false
+      }
+    }
+  }
+
+  /**
+   * Troca a dose de luz para a sala em que a partida passou a acontecer.
+   *
+   * Chamado pelo orquestrador quando `GameEvents.roomEntered` avisa a travessia,
+   * e no restart (com sala 1) para desfazer o clima da sala em que a partida
+   * anterior terminou.
+   *
+   * Troca INSTANTANEA, e nao crossfade: o jogador cruza um vao de 256 unidades
+   * correndo, com a porta emoldurando a mudanca, e a virada de luz nesse quadro
+   * le como "entrei em outro lugar". Um crossfade custaria estado por quadro
+   * para um ganho que so apareceria se a travessia fosse lenta — fica anotado
+   * como refinamento, nao como divida.
+   */
+  aoEntrarNaSala(sala: SalaId): void {
+    this.salaAtual = sala
+    const dose = AMBIENTE_POR_SALA[sala]
+
+    this.sun.intensity = this.luzBase.sol * dose.sol
+    this.ambientLight.intensity = this.luzBase.ambiente * dose.ambiente
+    this.hemiLight.intensity = this.luzBase.hemisferica * dose.hemisferica
+
+    if (dose.ceu === null) this.hemiLight.color.copy(this.ceuBase)
+    else this.hemiLight.color.set(dose.ceu)
+
+    const nevoa = this.scene.fog as Fog | null
+    if (nevoa) {
+      nevoa.near = this.nevoaBase.perto * dose.nevoa
+      nevoa.far = this.nevoaBase.longe * dose.nevoa
+    }
   }
 
   private buildTraces(color: number, positions: Float32Array): LineSegments {
@@ -1076,6 +1388,7 @@ export class Renderer {
     this.atualizarDecais(deltaMs)
     this.atualizarTraceBeams(deltaMs)
     this.atualizarImpactFlashes(deltaMs)
+    this.atualizarPortas(deltaMs)
 
     const traceMaterial = this.traceLines.material as LineBasicMaterial
     traceMaterial.opacity = this.traceTimer * this.traceLineOpacidadeAlvo

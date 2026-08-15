@@ -529,7 +529,7 @@ export class Sfx {
    * Direcao e distancia no som fazem o mesmo trabalho que o marcador na tela:
    * dizem de onde veio. Aqui o ouvido costuma chegar antes do olho.
    */
-  enemyShot(anguloRelativo: number, distancia: number): void {
+  enemyShot(anguloRelativo: number, distancia: number, arma: ShotKind = 'rifle'): void {
     // Quem esta a frente ou atras fica no centro; o maximo de lateralidade
     // acontece a noventa graus. O seno do angulo entrega exatamente isso.
     const pan = Math.max(-1, Math.min(1, Math.sin(anguloRelativo)))
@@ -542,10 +542,9 @@ export class Sfx {
     // diferenca de timbre que o ouvido usa para estimar distancia.
     const brilho = 2200 * perto + 400
 
-    // O evento de tiro inimigo nao carrega qual arma foi usada (so o
-    // jogador troca de kind) — o rifle e o som padrao de tiro a distancia,
-    // entao e a amostra usada aqui quando disponivel.
-    const amostra = this.amostras.rifle
+    // Rifle e o som padrao do tiro a distancia (zombieman); o sargento chega
+    // com a amostra de escopeta — o chamador decide pelo kind do EnemyShot.
+    const amostra = this.amostras[arma] ?? this.amostras.rifle
     if (amostra) {
       this.tocarCorpoAmostraInimigo(
         amostra,
@@ -656,6 +655,26 @@ export class Sfx {
 
   gameOver(): void {
     this.tom({ freq: 220, duracao: 0.8, ganho: 0.4, tipo: 'sawtooth', freqFinal: 50, reverb: 0.8 })
+  }
+
+  /**
+   * Chapa metalica subindo: rangido grave que sobe junto com a porta e um
+   * clank seco quando ela trava no alto. Casa com os 0,8 s da animacao.
+   */
+  porta(): void {
+    this.camadaRuido({
+      duracao: 0.75, ganho: 0.16, tipo: 'lowpass', freq: 220, freqFinal: 640, reverb: 0.7,
+    })
+    this.camadaRuido({
+      duracao: 0.06, ganho: 0.14, tipo: 'bandpass', freq: 1300, q: 4, atraso: 0.78, reverb: 0.6,
+    })
+  }
+
+  /** Fim feliz: o espelho ascendente do jingle de gameOver. */
+  vitoria(): void {
+    this.tom({ freq: 330, duracao: 0.18, ganho: 0.3, reverb: 0.6 })
+    this.tom({ freq: 440, duracao: 0.18, ganho: 0.3, atraso: 0.16, reverb: 0.6 })
+    this.tom({ freq: 660, duracao: 0.5, ganho: 0.32, atraso: 0.32, reverb: 0.75 })
   }
 }
 
