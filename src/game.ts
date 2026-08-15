@@ -460,6 +460,10 @@ export class Game {
       walls: this.arena.walls,
       others: snapshot,
       random: this.random,
+      // So os obstaculos da sala em que a briga acontece: procurar cobertura
+      // numa sala que o jogador ainda nem pisou faria o inimigo caminhar para
+      // fora do combate.
+      coberturas: this.arena.salas[this.salaAtiva - 1]!.boxes,
     }
 
     for (const enemy of this.enemies) {

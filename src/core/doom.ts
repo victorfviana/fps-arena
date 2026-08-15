@@ -223,7 +223,53 @@ export const ENEMIES = {
     painTics: 4,
     deathTics: 40,
   },
+  /**
+   * CITADO — info.c, mobjinfo MT_SHOTGUY (o "shotgun guy", sprite SPOS):
+   * spawnhealth 30, speed 8, radius 20*FRACUNIT, height 56*FRACUNIT,
+   * painchance 170.
+   *
+   * Geometria e velocidade sao as mesmas do POSS; o que muda e a vida (30
+   * contra 20), a chance de interrupcao (170 contra 200) e a arma. Os frames de
+   * caminhada tambem sao de 4 tics (S_SPOS_RUN1..8), entao `stepTics` continua
+   * valendo e a velocidade derivada e identica a do zombieman.
+   *
+   * DIVERGENCIA de nomenclatura, declarada: o denominador da painchance aqui e
+   * 256 (a faixa de P_Random), a mesma convencao ja usada pelo zombieman.
+   */
+  sergeant: {
+    health: 30,
+    radius: 20,
+    height: 56,
+    moveStep: 8,
+    stepTics: 4,
+    painChance: 170 / 256,
+    /** CITADO — S_SPOS_PAIN 3 tics + S_SPOS_PAIN2 3 tics. */
+    painTics: 6,
+    /** CITADO — S_SPOS_DIE1..DIE5, cinco frames de 5 tics (como o POSS). */
+    deathTics: 25,
+  },
 } as const
+
+/**
+ * CITADO — p_enemy.c, A_SPosAttack: `for (i=0 ; i<3 ; i++)`.
+ *
+ * O sargento dispara TRES chumbos por acionamento do gatilho, cada um com
+ * dispersao propria — e a diferenca de natureza entre ele e o zombieman, que
+ * dispara um so (A_PosAttack).
+ */
+export const SPOS_PELLETS = 3
+
+/**
+ * CITADO — info.c, duracao total da cadeia de ataque, em tics.
+ *
+ * POSS: S_POSS_ATK1 10 + S_POSS_ATK2 8 + S_POSS_ATK3 8 = 26.
+ * SPOS: S_SPOS_ATK1 10 + S_SPOS_ATK2 10 + S_SPOS_ATK3 10 = 30.
+ *
+ * Nao sao a cadencia do jogo (essa foi calibrada, ver BEHAVIOUR em
+ * enemies/enemy.ts): sao a RAZAO entre as duas cadencias no benchmark, que e o
+ * que a cadencia do sargento deriva daqui.
+ */
+export const ATTACK_CYCLE_TICS = { poss: 26, spos: 30 } as const
 
 /** DERIVADO — velocidade de perseguicao, em map units por tic. */
 export function chaseSpeed(enemy: { moveStep: number; stepTics: number }): number {

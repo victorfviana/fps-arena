@@ -47,13 +47,17 @@ describe('perseguicao', () => {
 
   it('anda na velocidade derivada do benchmark', () => {
     const enemy = createEnemy('imp', 0, -1000)
-    const start = enemy.z
     const tics = 20
 
     for (let i = 0; i < tics; i++) tickEnemy(enemy, context())
 
-    const travelled = Math.abs(enemy.z - start)
-    expect(travelled / tics).toBeCloseTo(chaseSpeed(ENEMIES.imp), 1)
+    // Mede o CAMINHO andado, e nao o quanto encurtou em Z. De longe o imp
+    // flanqueia (ver desvioDeFlanco em enemy.ts): parte do passo vai para o
+    // lado, entao a projecao em Z passou a ser 1,94 por tic enquanto a
+    // velocidade continua sendo exatamente a do benchmark. Medir a projecao
+    // media a velocidade E o angulo de aproximacao ao mesmo tempo; o que este
+    // teste quer travar e so a velocidade.
+    expect(enemy.distanceWalked / tics).toBeCloseTo(chaseSpeed(ENEMIES.imp), 1)
   })
 
   it('e mais lento que o jogador correndo, senao a arena vira armadilha', () => {

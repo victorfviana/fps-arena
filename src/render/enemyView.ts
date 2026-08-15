@@ -50,6 +50,10 @@ import type { EnemyModel, EnemyModelSet } from './enemyModels'
 const PALETTE: Record<EnemyKind, { body: number; head: number; limb: number }> = {
   zombieman: { body: 0x5f7048, head: 0x8a9668, limb: 0x4a5838 },
   imp: { body: 0xa8442a, head: 0xd4703c, limb: 0x8a3520 },
+  // Sargento: azul-ardosia, longe do verde do zumbi e do laranja do imp. E o
+  // minimo para o tipo novo existir na tela; o acabamento dele (modelo tingido,
+  // silhueta da escopeta) e da etapa C.
+  sergeant: { body: 0x3e5670, head: 0x6a86a4, limb: 0x2f4257 },
 }
 
 /** Cor do corpo no instante do dano. Vale para os dois caminhos. */
@@ -81,6 +85,7 @@ const CROSSFADE_S = 0.15
 const CLIPE_ATAQUE: Record<EnemyKind, string> = {
   zombieman: 'Weapon',
   imp: 'Punch',
+  sergeant: 'Weapon',
 }
 
 /** Partes exclusivas do corpo procedural (fallback). */
@@ -423,7 +428,10 @@ export class EnemyRenderer {
       return reused
     }
 
-    return this.modelos ? this.buildModel(kind, this.modelos[kind]) : this.buildProcedural(kind)
+    // Tipo sem modelo gltf proprio (o sargento, ate a etapa C escolher o dele)
+    // cai no corpo procedural — o mesmo caminho de quando a rede falha.
+    const modelo = this.modelos?.[kind as keyof EnemyModelSet] ?? null
+    return modelo ? this.buildModel(kind, modelo) : this.buildProcedural(kind)
   }
 
   private buildProcedural(kind: EnemyKind): EnemyView {

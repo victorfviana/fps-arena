@@ -54,6 +54,15 @@ legibilidade intactas, captura de tela por sala, publicação.
       viés de mistura por sala; contratos novos: GameEvents.doorOpened /
       roomEntered / gameWon, Game.salaAtiva, Arena.salas/portas/boundsTotal.
       Render AINDA desenha só o galpão — primeira tarefa da etapa C.)
-- [ ] Etapa B: IA (cobertura, flanco, sargento)
-- [ ] Etapa C: render de portas/salas + HUD
+- [x] Etapa B: IA (cobertura, flanco, sargento)
+      (cobertura = ponto ao lado de um obstaculo ALTO de onde `segmentBlocked`
+      corta a visada, escolhido uma vez por disparo; raio efetivo limitado pelo
+      que da para andar num cooldown — 100u para o zombieman, nao os 400 do
+      plano, ver COVER_SEARCH_RADIUS. Flanco = desvio perpendicular do ponto de
+      mira, lado pela paridade do id. Sargento = EnemyKind 'sergeant', 3 chumbos
+      agregados num unico EnemyAttack. Contratos novos: EnemyTickContext.
+      coberturas (opcional), Enemy.coverX/coverZ/coverTics, EnemyAttack.damage
+      agora pode somar chumbos. Testes em tests/ia.test.ts. O sargento AINDA NAO
+      nasce: falta entrar em waves.ts e ganhar render proprio na etapa C.)
+- [ ] Etapa C: render de portas/salas + HUD + entrada do sargento (waves + arte)
 - [ ] Calibração multi-semente por sala + captura + publicação
