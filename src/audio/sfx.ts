@@ -1,3 +1,5 @@
+import { amostraCrua } from './samples'
+
 /**
  * Efeitos sonoros sintetizados, com estrutura acustica de arma de fogo.
  *
@@ -18,7 +20,13 @@
  * A cauda e feita por convolucao com uma resposta ao impulso gerada aqui
  * mesmo — e o item que mais aproxima do real, e o que faltava por inteiro.
  *
- * Continua sem nenhum arquivo de audio.
+ * ADR 0004: o disparo do jogador (e o do inimigo) agora e HIBRIDO. Duas
+ * gravacoes (public/sounds/shotgun.wav e rifle.wav, ver samples.ts) entram
+ * como CORPO do som e passam pela mesma acustica — saturacao, compressor,
+ * reverb por convolucao, abafamento por distancia. A borda seca (<2 ms) e o
+ * grave sintetico de pressao continuam por cima, gravados ou nao. Sem a
+ * amostra (fetch falhou, ou ainda nao terminou de decodificar), o disparo
+ * cai de volta na cadeia 100% sintetica de sempre — nunca quebra.
  */
 
 /** Duracao da cauda do ambiente, em segundos. */
@@ -26,6 +34,57 @@ const REVERB_SEGUNDOS = 1.6
 
 /** Buffer de ruido pre-gerado, para nao alocar a cada disparo. */
 const RUIDO_SEGUNDOS = 2
+
+/**
+ * Constantes de calibracao do corpo hibrido (amostra gravada). Mexer aqui se
+ * o Victor achar o tiro alto/baixo/estridente demais ao ouvir no jogo — nao
+ * precisa mexer na estrutura da cadeia para isso.
+ */
+// Ganho do corpo (amostra) por arma. Mantido bem abaixo de 1: a gravacao ja
+// vem com harmonicos fortes, e ganho alto aqui e o que faz o compressor
+// bombear (ADR 0004 pede para nao acionar o limitador com a amostra).
+// Medido no navegador em 14/08: com 0.6/0.52 o pico do disparo saia 10x acima
+// do resto da mixagem (0,53 contra 0,055 do conjunto sintetico) e enterrava
+// dor, passos e interface. Estes valores poem o corpo gravado ~4x acima do
+// mix antigo — mais presenca sem apagar o resto.
+const GANHO_CORPO_AMOSTRA_SHOTGUN = 0.42
+const GANHO_CORPO_AMOSTRA_RIFLE = 0.36
+// Proporcao enviada ao reverb quando o corpo e a amostra (nao a sintese).
+// A gravacao ja carrega a propria sala (1,2-1,9 s de cauda no arquivo).
+// Enviar muito dela para a convolucao soma sala sobre sala e o molhado
+// ultrapassa o seco — medido: pico do envelope migrava para ~226 ms.
+const REVERB_CORPO_AMOSTRA_JOGADOR = 0.15
+const REVERB_CORPO_AMOSTRA_INIMIGO = 0.45
+// Ganho do corpo do tiro inimigo (amostra), antes de escalar por `perto`.
+const GANHO_CORPO_AMOSTRA_INIMIGO = 0.3
+
+/** Amostra decodificada com o silencio de entrada ja medido. */
+interface AmostraDecodificada {
+  buffer: AudioBuffer
+  /** Onde o som de fato comeca, em segundos. */
+  inicioS: number
+}
+
+/**
+ * Primeira passagem acima de 2% do pico, com 2 ms de folga. As gravacoes do
+ * pack tem ~200 ms de silencio de entrada; sem o recorte, o tiro inteiro sai
+ * esse atraso depois do gatilho — atraso que o jogador sente na mao.
+ */
+function inicioDoSom(buffer: AudioBuffer): number {
+  const canal = buffer.getChannelData(0)
+  let pico = 0
+  for (let i = 0; i < canal.length; i++) pico = Math.max(pico, Math.abs(canal[i]!))
+  const limiar = pico * 0.02
+  for (let i = 0; i < canal.length; i++) {
+    if (Math.abs(canal[i]!) >= limiar) return Math.max(0, i / buffer.sampleRate - 0.002)
+  }
+  return 0
+}
+// Faixa de variacao aleatoria de playbackRate por disparo do jogador — e o
+// que evita dois tiros seguidos soarem identicos, ja que so ha uma gravacao
+// por arma.
+const JITTER_PLAYBACK_MIN = 0.96
+const JITTER_PLAYBACK_MAX = 1.05
 
 export type ShotKind = 'shotgun' | 'rifle'
 
@@ -46,6 +105,17 @@ export class Sfx {
   private ruido: AudioBuffer | null = null
   private saturacao: WaveShaperNode | null = null
   private muted = false
+  /** Amostras gravadas ja decodificadas NESTE contexto (decode e por contexto). */
+  private amostras: Partial<Record<ShotKind, AmostraDecodificada>> = {}
+  /**
+   * Resolve quando a decodificacao das amostras (as que existirem no cache
+   * de samples.ts) terminar. `resume()` dispara e nao espera — o jogo normal
+   * nao pode atrasar o primeiro disparo por causa de um decode assincrono; o
+   * proprio `shot()`/`enemyShot()` cai no sintetico se a amostra ainda nao
+   * estiver pronta. So `medirTiro` (main.ts) precisa aguardar isto, para
+   * medir o hibrido em vez da sintese pura.
+   */
+  private amostrasProntas: Promise<void> | null = null
 
   /**
    * @param contextoExterno usado para medicao: passando um `OfflineAudioContext`
@@ -74,7 +144,11 @@ export class Sfx {
       // taxa baixa deixam o compressor so aparar somas de varios disparos
       // simultaneos, que e para o que ele serve aqui.
       compressor.threshold.value = -3
-      compressor.knee.value = 10
+      // Knee estreito de proposito: com 10 dB (e pior, com os 30 do default) a
+      // compressao comeca bem abaixo do limiar e achata a dinamica do corpo
+      // gravado — medido: o envelope virava plato e o pico migrava para
+      // ~230 ms. Rede de seguranca so age perto do teto.
+      compressor.knee.value = 4
       compressor.ratio.value = 3
       compressor.attack.value = 0.0008
       compressor.release.value = 0.25
@@ -108,10 +182,48 @@ export class Sfx {
       retornoReverb.gain.value = 0.3
       convolver.connect(retornoReverb)
       retornoReverb.connect(this.master)
+
+      // Dispara o decode das amostras gravadas (se o fetch em samples.ts ja
+      // tiver terminado) sem esperar por ele: decode e assincrono, mas o
+      // primeiro disparo nao pode ficar mudo ate ele terminar.
+      this.amostrasProntas = this.decodificarAmostras()
     }
 
     // Contexto offline nao tem (nem precisa de) resume.
     if ('resume' in this.context) void (this.context as AudioContext).resume()
+  }
+
+  /**
+   * Resolve quando o decode das amostras (se houver) tiver terminado.
+   *
+   * O jogo normal nunca chama isto. Existe para `medirTiro`: sem aguardar
+   * aqui antes do disparo medido, a renderizacao offline mediria so a
+   * sintese, mesmo com a amostra disponivel.
+   */
+  async aguardarAmostras(): Promise<void> {
+    await this.amostrasProntas
+  }
+
+  /** Decodifica, uma vez por instancia/contexto, cada amostra que o cache de
+   *  samples.ts tiver disponivel. Amostra ausente ou erro de decode: segue
+   *  sem ela, o disparo correspondente cai no caminho sintetico. */
+  private async decodificarAmostras(): Promise<void> {
+    const ctx = this.context
+    if (!ctx) return
+
+    const kinds: ShotKind[] = ['shotgun', 'rifle']
+    await Promise.all(
+      kinds.map(async (kind) => {
+        const bytesCrus = amostraCrua(kind)
+        if (!bytesCrus) return
+        try {
+          const buffer = await ctx.decodeAudioData(bytesCrus)
+          this.amostras[kind] = { buffer, inicioS: inicioDoSom(buffer) }
+        } catch (erro) {
+          console.warn(`[audio] falha ao decodificar a amostra de ${kind}; seguindo so com a sintese.`, erro)
+        }
+      }),
+    )
   }
 
   /**
@@ -263,24 +375,117 @@ export class Sfx {
   }
 
   /**
+   * Corpo do disparo do jogador quando ha amostra gravada: fonte -> ganho ->
+   * saturacao (cadeia molhada normal) + envio de reverb. Jitter de
+   * playbackRate a cada chamada — e o que evita dois tiros identicos, ja que
+   * so ha uma gravacao por arma.
+   */
+  private tocarCorpoAmostra(amostra: AmostraDecodificada, ganho: number, reverb: number): void {
+    const ctx = this.context
+    if (!ctx || !this.saturacao) return
+
+    const fonte = ctx.createBufferSource()
+    fonte.buffer = amostra.buffer
+    fonte.playbackRate.value =
+      JITTER_PLAYBACK_MIN + Math.random() * (JITTER_PLAYBACK_MAX - JITTER_PLAYBACK_MIN)
+
+    const envelope = ctx.createGain()
+    envelope.gain.value = ganho
+
+    fonte.connect(envelope)
+    // Direto ao master, SEM a saturacao — mesmo precedente do tom(). A
+    // captacao de arma ja vem saturada de origem, e o tanh normalizado
+    // levanta o trecho quieto ~2x: passava o corpo gravado por ele e o
+    // envelope virava plato com pico em ~230 ms (medido).
+    if (this.master) envelope.connect(this.master)
+
+    if (reverb && this.reverbSend) {
+      const envio = ctx.createGain()
+      envio.gain.value = reverb
+      envelope.connect(envio)
+      envio.connect(this.reverbSend)
+    }
+
+    fonte.start(ctx.currentTime, amostra.inicioS)
+  }
+
+  /**
+   * Corpo do disparo INIMIGO quando ha amostra gravada: fonte -> lowpass (a
+   * mesma curva de abafamento por distancia do caminho sintetico) ->
+   * panner -> saturacao + reverb mais molhado. Sem jitter aqui — o
+   * afastamento e o pan ja bastam para diferenciar disparos inimigos entre
+   * si, e a spec so pede jitter para o tiro do jogador.
+   */
+  private tocarCorpoAmostraInimigo(
+    amostra: AmostraDecodificada,
+    ganho: number,
+    freqCorte: number,
+    pan: number,
+    reverb: number,
+  ): void {
+    const ctx = this.context
+    if (!ctx || !this.saturacao) return
+
+    const fonte = ctx.createBufferSource()
+    fonte.buffer = amostra.buffer
+
+    const filtro = ctx.createBiquadFilter()
+    filtro.type = 'lowpass'
+    filtro.frequency.value = freqCorte
+
+    const envelope = ctx.createGain()
+    envelope.gain.value = ganho
+
+    const panner = ctx.createStereoPanner()
+    panner.pan.value = pan
+
+    fonte.connect(filtro)
+    filtro.connect(envelope)
+    envelope.connect(panner)
+    // Mesmo desvio da saturacao do corpo do jogador — ver tocarCorpoAmostra.
+    if (this.master) panner.connect(this.master)
+
+    if (reverb && this.reverbSend) {
+      const envio = ctx.createGain()
+      envio.gain.value = reverb
+      panner.connect(envio)
+      envio.connect(this.reverbSend)
+    }
+
+    fonte.start(ctx.currentTime, amostra.inicioS)
+  }
+
+  /**
    * Disparo do jogador.
    *
    * As quatro camadas saem juntas, com pesos diferentes por arma. A escopeta
    * carrega nos graves e tem cauda longa; o rifle troca peso por estalo e
    * fecha mais rapido.
+   *
+   * ADR 0004: quando a amostra gravada da arma ja decodificou, ela substitui
+   * SO as camadas sinteticas de corpo/estalo/onda de choque (a gravacao ja
+   * carrega tudo isso). Borda seca, tom de pressao e mecanica continuam
+   * sempre, gravado ou nao.
    */
   shot(kind: ShotKind): void {
     // Variacao de 6% no volume e no brilho entre disparos. Sem ela, a repeticao
     // denuncia a sintese em dois tiros seguidos.
     const v = 0.94 + Math.random() * 0.12
+    const amostra = this.amostras[kind]
 
     if (kind === 'shotgun') {
-      // Onda de choque: grave, forte, com a frequencia caindo enquanto expande.
-      this.camadaRuido({ duracao: 0.34, ganho: 0.55 * v, tipo: 'lowpass', freq: 900, freqFinal: 90, reverb: 0.85 })
-      // Corpo: a faixa media que da volume ao estouro.
-      this.camadaRuido({ duracao: 0.20, ganho: 0.32 * v, tipo: 'bandpass', freq: 1100, freqFinal: 380, q: 0.7, reverb: 0.7 })
-      // Estalo: curtissimo e agudo, o que faz parecer perto.
-      this.camadaRuido({ duracao: 0.05, ganho: 0.30 * v, tipo: 'highpass', freq: 2600, freqFinal: 6500, reverb: 0.3 })
+      if (amostra) {
+        // A gravacao e o corpo inteiro: onda de choque + corpo + estalo, tudo
+        // que as tres camadas sinteticas abaixo faziam.
+        this.tocarCorpoAmostra(amostra, GANHO_CORPO_AMOSTRA_SHOTGUN * v, REVERB_CORPO_AMOSTRA_JOGADOR)
+      } else {
+        // Onda de choque: grave, forte, com a frequencia caindo enquanto expande.
+        this.camadaRuido({ duracao: 0.34, ganho: 0.55 * v, tipo: 'lowpass', freq: 900, freqFinal: 90, reverb: 0.85 })
+        // Corpo: a faixa media que da volume ao estouro.
+        this.camadaRuido({ duracao: 0.20, ganho: 0.32 * v, tipo: 'bandpass', freq: 1100, freqFinal: 380, q: 0.7, reverb: 0.7 })
+        // Estalo: curtissimo e agudo, o que faz parecer perto.
+        this.camadaRuido({ duracao: 0.05, ganho: 0.30 * v, tipo: 'highpass', freq: 2600, freqFinal: 6500, reverb: 0.3 })
+      }
       // Borda seca: nao substitui o estalo acima (que da o corpo) — so cobre
       // os primeiros ~10 ms que saturacao+compressor atrasavam em 9-10 ms.
       this.camadaRuido({ duracao: 0.010, ganho: 0.16 * v, tipo: 'highpass', freq: 3200, seco: true })
@@ -298,10 +503,14 @@ export class Sfx {
     }
 
     if (kind === 'rifle') {
-      this.camadaRuido({ duracao: 0.19, ganho: 0.42 * v, tipo: 'lowpass', freq: 1500, freqFinal: 150, reverb: 0.8 })
-      this.camadaRuido({ duracao: 0.11, ganho: 0.35 * v, tipo: 'bandpass', freq: 2400, freqFinal: 900, q: 0.9, reverb: 0.6 })
-      // Estalo dominante: e o que separa rifle de escopeta ao ouvido.
-      this.camadaRuido({ duracao: 0.045, ganho: 0.44 * v, tipo: 'highpass', freq: 3800, freqFinal: 9000, reverb: 0.35 })
+      if (amostra) {
+        this.tocarCorpoAmostra(amostra, GANHO_CORPO_AMOSTRA_RIFLE * v, REVERB_CORPO_AMOSTRA_JOGADOR)
+      } else {
+        this.camadaRuido({ duracao: 0.19, ganho: 0.42 * v, tipo: 'lowpass', freq: 1500, freqFinal: 150, reverb: 0.8 })
+        this.camadaRuido({ duracao: 0.11, ganho: 0.35 * v, tipo: 'bandpass', freq: 2400, freqFinal: 900, q: 0.9, reverb: 0.6 })
+        // Estalo dominante: e o que separa rifle de escopeta ao ouvido.
+        this.camadaRuido({ duracao: 0.045, ganho: 0.44 * v, tipo: 'highpass', freq: 3800, freqFinal: 9000, reverb: 0.35 })
+      }
       // Borda seca: mesma logica da escopeta, ganho igual ao estalo molhado.
       this.camadaRuido({ duracao: 0.010, ganho: 0.16 * v, tipo: 'highpass', freq: 3200, seco: true })
       this.tom({ freq: 190, duracao: 0.09, ganho: 0.18 * v, tipo: 'sine', freqFinal: 70, reverb: 0.4 })
@@ -332,6 +541,21 @@ export class Sfx {
     // O ar absorve agudo antes de grave: longe, o tiro chega abafado. E essa
     // diferenca de timbre que o ouvido usa para estimar distancia.
     const brilho = 2200 * perto + 400
+
+    // O evento de tiro inimigo nao carrega qual arma foi usada (so o
+    // jogador troca de kind) — o rifle e o som padrao de tiro a distancia,
+    // entao e a amostra usada aqui quando disponivel.
+    const amostra = this.amostras.rifle
+    if (amostra) {
+      this.tocarCorpoAmostraInimigo(
+        amostra,
+        GANHO_CORPO_AMOSTRA_INIMIGO * perto,
+        brilho,
+        pan,
+        REVERB_CORPO_AMOSTRA_INIMIGO,
+      )
+      return
+    }
 
     this.camadaRuido({
       duracao: 0.16, ganho: 0.5 * perto, tipo: 'lowpass',

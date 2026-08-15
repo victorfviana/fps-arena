@@ -18,6 +18,7 @@ import {
 import { currentWeapon, swapProgress } from './weapons/aiming'
 import { LOADOUT, effectiveFov } from './weapons/loadout'
 import { resetEnemyIds } from './enemies/enemy'
+import { carregarAmostrasDeTiro } from './audio/samples'
 import { carregarModelosInimigos } from './render/enemyModels'
 import { Input } from './core/input'
 import { FixedTimestepLoop } from './core/loop'
@@ -77,7 +78,10 @@ sfx.instalarAutoResume()
 startButton.disabled = true
 const rotuloJogar = startButton.textContent
 startButton.textContent = 'carregando...'
-const modelosProntos = carregarModelosInimigos().then((modelos) => {
+const modelosProntos = Promise.all([
+  carregarModelosInimigos(),
+  carregarAmostrasDeTiro(),
+]).then(([modelos]) => {
   if (modelos) enemyRenderer.usarModelos(modelos)
   startButton.disabled = false
   startButton.textContent = rotuloJogar
@@ -452,10 +456,22 @@ Object.assign(window, {
 
       const aferidor = new Sfx(offline)
       aferidor.resume()
-      aferidor.shot(kind)
+      // Sem este await a amostra ainda nao decodificou e a medicao cairia na
+      // sintese pura — mediria o fallback, nao o som que o jogador ouve.
+      await aferidor.aguardarAmostras()
 
-      const rendered = await offline.startRendering()
-      const canal = rendered.getChannelData(0)
+      // O disparo sai em t=0,4 s, nao em t=0: o DynamicsCompressor parte de
+      // estado frio num contexto recem-criado e engole o inicio do som numa
+      // rampa de centenas de ms (medido: primeira janela 0,008 contra 0,181
+      // sem compressor). No jogo real ele esta quente ha minutos — atirar no
+      // t=0 media um artefato do aferidor, nao o que o jogador ouve.
+      const inicioDisparoS = 0.4
+      const suspensao = offline.suspend(inicioDisparoS).then(() => {
+        aferidor.shot(kind)
+        return offline.resume()
+      })
+      const [rendered] = await Promise.all([offline.startRendering(), suspensao])
+      const canal = rendered.getChannelData(0).subarray(Math.floor(taxa * inicioDisparoS))
 
       /**
        * Envelope por RMS em janelas de 1 ms.
@@ -480,6 +496,18 @@ Object.assign(window, {
       for (let i = 0; i < envelope.length; i++) {
         if (envelope[i]! > pico) { pico = envelope[i]!; indicePico = i }
       }
+
+      // As 6 janelas mais fortes (ms e valor), para diagnosticar de ONDE vem
+      // um pico de envelope fora do lugar — sem isso o numero unico engana.
+      const topoMs = envelope
+        .map((valor, ms) => ({ ms, valor: Number(valor.toFixed(4)) }))
+        .sort((a, b) => b.valor - a.valor)
+        .slice(0, 6)
+
+      const perfilInicial = [2, 8, 15, 25, 35, 50, 80, 120, 160, 200, 240].map((ms) => ({
+        ms,
+        valor: Number((envelope[ms] ?? 0).toFixed(4)),
+      }))
 
       let picoAmostra = 0
       for (let i = 0; i < canal.length; i++) {
@@ -521,6 +549,8 @@ Object.assign(window, {
         picoAmostra: +picoAmostra.toFixed(4),
         // Janelas de 1 ms, entao o indice ja e o tempo em milissegundos.
         ataqueMs: indicePico,
+        topoMs,
+        perfilInicial,
         caudaMs: +((ultimoAcimaDoLimiar / taxa) * 1000).toFixed(0),
         // Frequencia dominante estimada no inicio, no meio e no fim.
         brilhoInicioHz: bandas[0] ?? 0,

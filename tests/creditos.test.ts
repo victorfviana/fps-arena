@@ -7,16 +7,20 @@ import { describe, expect, it } from 'vitest'
  * do CLAUDE.md do projeto em forma executavel: asset sem procedencia
  * registrada reprova a entrega.
  */
-describe('rastreio de licenca de assets', () => {
-  it('todo arquivo de public/models/ tem linha no CREDITS.md', () => {
-    const raiz = join(__dirname, '..')
-    const arquivos = readdirSync(join(raiz, 'public', 'models'))
-    expect(arquivos.length).toBeGreaterThan(0)
+const PASTAS_DE_ASSETS = ['models', 'sounds'] as const
 
+describe('rastreio de licenca de assets', () => {
+  it('todo arquivo de public/models/ e public/sounds/ tem linha no CREDITS.md', () => {
+    const raiz = join(__dirname, '..')
     const creditos = readFileSync(join(raiz, 'CREDITS.md'), 'utf8')
-    for (const arquivo of arquivos) {
-      expect(creditos, `sem credito para ${arquivo}`).toContain(`public/models/${arquivo}`)
+    let total = 0
+    for (const pasta of PASTAS_DE_ASSETS) {
+      for (const arquivo of readdirSync(join(raiz, 'public', pasta))) {
+        total++
+        expect(creditos, `sem credito para ${arquivo}`).toContain(`public/${pasta}/${arquivo}`)
+      }
     }
+    expect(total).toBeGreaterThan(0)
   })
 
   it('toda linha de credito declara uma licenca conhecida', () => {
@@ -24,7 +28,7 @@ describe('rastreio de licenca de assets', () => {
     const creditos = readFileSync(join(raiz, 'CREDITS.md'), 'utf8')
     const linhas = creditos
       .split('\n')
-      .filter((l) => l.trimStart().startsWith('|') && l.includes('public/models/'))
+      .filter((l) => l.trimStart().startsWith('|') && l.includes('public/'))
     expect(linhas.length).toBeGreaterThan(0)
     for (const linha of linhas) {
       expect(linha, `licenca ausente em: ${linha}`).toMatch(/CC0|CC-BY|MIT/)
